@@ -23,17 +23,30 @@ def _init_firebase_if_needed():
     if _firebase_initialized or not _FIREBASE_AVAILABLE:
         return;
     try:
+        # Try to get credentials from environment variables first
+        firebase_service_account_key = os.environ.get('FIREBASE_SERVICE_ACCOUNT_KEY', '').strip();
+        
+        if firebase_service_account_key:
+            # Parse JSON from environment variable
+            try:
+                cred_data = json.loads(firebase_service_account_key);
+                cred = credentials.Certificate(cred_data);
+                project_id = cred_data.get('project_id', '');
+                if project_id:
+                    firebase_admin.initialize_app(cred, { 'projectId': project_id });
+                else:
+                    firebase_admin.initialize_app(cred);
+                _firebase_initialized = True;
+                print('[Auth] Firebase initialized from environment variable');
+                return;
+            except Exception as e:
+                print(f"[Auth] Failed to parse FIREBASE_SERVICE_ACCOUNT_KEY: {e}");
+        
+        # Fallback: try file path from environment variables
         cred_path = os.environ.get('FIREBASE_CREDENTIALS', '').strip();
         if not cred_path:
             cred_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS', '').strip();
-        if not cred_path or not os.path.isfile(cred_path):
-            # Fallback: Chat/lib/firebase-service.json relative to this file
-            server_dir = os.path.dirname(__file__);
-            chat_root = os.path.abspath(os.path.join(server_dir, '..'));
-            fallback_path = os.path.join(chat_root, 'lib', 'firebase-service.json');
-            if os.path.isfile(fallback_path):
-                cred_path = fallback_path;
-
+        
         if cred_path and os.path.isfile(cred_path):
             # Read project_id for explicit initialization (avoids "A project ID is required" errors)
             project_id = '';
@@ -48,13 +61,17 @@ def _init_firebase_if_needed():
                 firebase_admin.initialize_app(cred, { 'projectId': project_id });
             else:
                 firebase_admin.initialize_app(cred);
-        else:
-            # Try default app (ADC). On Windows dev, set env var or place serviceAccountKey.json and point to it.
-            firebase_admin.initialize_app();
+            _firebase_initialized = True;
+            print('[Auth] Firebase initialized from file');
+            return;
+        
+        # Try default app (ADC)
+        firebase_admin.initialize_app();
         _firebase_initialized = True;
-        print('[Auth] Firebase initialized');
+        print('[Auth] Firebase initialized with default credentials');
     except Exception as exc:
         print(f"[Auth] Firebase init failed: {exc}");
+        print("[Auth] Please set FIREBASE_SERVICE_ACCOUNT_KEY environment variable or GOOGLE_APPLICATION_CREDENTIALS");
         _firebase_initialized = False;
 
 def _verify_id_token(id_token: str) -> tuple[bool, str]:
