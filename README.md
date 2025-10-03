@@ -24,18 +24,21 @@ pip install firebase-admin python-dotenv
 3. Download the service account key JSON file
 4. Set up environment variables:
 
-#### Option 1: Environment Variable (Recommended)
+#### Option 1: Environment Variables (Recommended)
 
-Set the `FIREBASE_SERVICE_ACCOUNT_KEY` environment variable with your service account JSON:
+Set the required Firebase environment variables:
 
 ```bash
 # Windows (PowerShell)
+$env:FIREBASE_WEB_API_KEY="AIzaSyYour_Web_API_Key_Here"
 $env:FIREBASE_SERVICE_ACCOUNT_KEY='{"type":"service_account","project_id":"your-project-id",...}'
 
 # Windows (Command Prompt)
+set FIREBASE_WEB_API_KEY=AIzaSyYour_Web_API_Key_Here
 set FIREBASE_SERVICE_ACCOUNT_KEY={"type":"service_account","project_id":"your-project-id",...}
 
 # Linux/Mac
+export FIREBASE_WEB_API_KEY="AIzaSyYour_Web_API_Key_Here"
 export FIREBASE_SERVICE_ACCOUNT_KEY='{"type":"service_account","project_id":"your-project-id",...}'
 ```
 
