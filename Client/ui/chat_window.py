@@ -16,6 +16,8 @@ class ChatWindow:
         # Network
         self.network = ChatNetwork(host, port)
         self.network.set_receive_callback(self._on_message_received)
+        # Keep the id_token so reconnects can reuse it
+        self.id_token = id_token
         
         self._setup_ui()
         self._connect_to_server(id_token)
@@ -56,12 +58,12 @@ class ChatWindow:
         
     def _connect_to_server(self, id_token: str):
         """Connect to server with authentication."""
-        if self.network.connect(id_token):
+        success, err = self.network.connect(id_token)
+        if success:
             self.log(f'Connected to {self.network.host}:{self.network.port} (authenticated)')
         else:
-            messagebox.showerror('Connection Error', 
-                               f'Could not connect to {self.network.host}:{self.network.port}')
-            self.master.destroy()
+            # Show the detailed error and keep window open so user can edit host/port
+            messagebox.showerror('Connection Error', err or f'Could not connect to {self.network.host}:{self.network.port}')
             
     def _on_message_received(self, message: str):
         self.master.after(0, self.log, message)
@@ -87,11 +89,16 @@ class ChatWindow:
             messagebox.showerror('Input Error', 'Please enter a host address')
             return
             
-        # Update network settings
+        # Update network settings and attempt to connect
         self.network.host = host
         self.network.port = port
-        
-        messagebox.showerror('Reconnect Error', 'Please restart the application to reconnect')
+
+        # Try to reconnect using the stored auth token
+        success, err = self.network.connect(self.id_token or '')
+        if success:
+            self.log(f'Reconnected to {host}:{port}')
+        else:
+            messagebox.showerror('Reconnect Error', err or f'Could not reconnect to {host}:{port}')
 
     def send_message(self):
         message = self.entry_message.get().strip()

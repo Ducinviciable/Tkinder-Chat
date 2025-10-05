@@ -17,15 +17,35 @@ class ChatNetwork:
     def set_receive_callback(self, callback):
         self.receive_callback = callback
         
-    def connect(self, id_token: str) -> bool:
+    def connect(self, id_token: str) -> tuple[bool, Optional[str]]:
+        """Attempt to connect and authenticate.
+
+        Returns (success, error_message). On success, error_message is None.
+        """
         if self.is_connected:
-            return True
-            
+            return True, None
+
         try:
             self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Short timeout for establishing connection
+            self.client_socket.settimeout(5.0)
             self.client_socket.connect((self.host, self.port))
-        except Exception:
-            return False
+        except Exception as e:
+            # Provide a helpful error string
+            try:
+                if self.client_socket is not None:
+                    self.client_socket.close()
+            except Exception:
+                pass
+            self.client_socket = None
+            return False, f'Could not connect to {self.host}:{self.port} ({e})'
+        finally:
+            # Clear timeout for normal operation
+            try:
+                if self.client_socket is not None:
+                    self.client_socket.settimeout(None)
+            except Exception:
+                pass
 
         # Send AUTH handshake and wait for server response
         try:
@@ -34,20 +54,26 @@ class ChatNetwork:
             # Wait for single-line response
             auth_resp = self._recv_line(self.client_socket, timeout_s=15.0)
             if auth_resp != 'AUTH_OK':
-                raise ConnectionError(f'Auth failed: {auth_resp}')
-        except Exception:
+                # Close socket on auth failure
+                try:
+                    self.client_socket.close()
+                except Exception:
+                    pass
+                self.client_socket = None
+                return False, f'Auth failed: {auth_resp}'
+        except Exception as e:
             try:
                 self.client_socket.close()
             except Exception:
                 pass
             self.client_socket = None
-            return False
+            return False, f'Error during auth: {e}'
 
         self.is_connected = True
-        
+
         # Start receiver thread
         threading.Thread(target=self._receive_loop, daemon=True).start()
-        return True
+        return True, None
 
     def send_message(self, message: str) -> bool:
         if not self.is_connected or self.client_socket is None:
