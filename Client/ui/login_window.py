@@ -158,7 +158,8 @@ class LoginWindow:
                 
             # Close login window and call success callback
             self.master.destroy()
-            self.on_login_success(host, port, id_token)
+            # Pass the signed-in email to the chat window for later checks (e.g., friend features)
+            self.on_login_success(host, port, id_token, email)
             
         except ValueError as e:
             messagebox.showerror('Auth Error', str(e))
