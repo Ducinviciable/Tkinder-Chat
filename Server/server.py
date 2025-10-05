@@ -3,6 +3,15 @@ import threading;
 import os;
 import json;
 
+# Load environment variables from a local .env file if available
+try:
+    from dotenv import load_dotenv, find_dotenv
+    _dotenv_path = find_dotenv()
+    if _dotenv_path:
+        load_dotenv(_dotenv_path)
+except Exception:
+    pass
+
 try:
     # Firebase Admin SDK for verifying ID tokens
     import firebase_admin; from firebase_admin import credentials, auth as fb_auth;
@@ -23,6 +32,31 @@ def _init_firebase_if_needed():
     if _firebase_initialized or not _FIREBASE_AVAILABLE:
         return;
     try:
+        # 1) Prefer local service account file at Chat/lib/firebase-service.json
+        try:
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'));
+            default_sa_path = os.path.join(project_root, 'lib', 'firebase-service.json');
+            if os.path.isfile(default_sa_path):
+                # Read JSON to extract project_id for explicit initialization
+                project_id = '';
+                try:
+                    with open(default_sa_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f);
+                        project_id = (data.get('project_id') or '').strip();
+                except Exception:
+                    project_id = '';
+                cred = credentials.Certificate(default_sa_path);
+                if project_id:
+                    firebase_admin.initialize_app(cred, { 'projectId': project_id });
+                else:
+                    firebase_admin.initialize_app(cred);
+                _firebase_initialized = True;
+                print('[Auth] Firebase initialized from Chat/lib/firebase-service.json');
+                return;
+        except Exception as e:
+            # fall through to other methods
+            print(f"[Auth] Failed to init from Chat/lib/firebase-service.json: {e}");
+
         # Try to get credentials from environment variables first
         firebase_service_account_key = os.environ.get('FIREBASE_SERVICE_ACCOUNT_KEY', '').strip();
         
@@ -81,7 +115,8 @@ def _verify_id_token(id_token: str) -> tuple[bool, str]:
     if not _firebase_initialized:
         return (False, 'auth_not_initialized');
     try:
-        decoded = fb_auth.verify_id_token(id_token, check_revoked=True);
+        # Allow a small clock skew tolerance to avoid "Token used too early/late" due to minor time drift
+        decoded = fb_auth.verify_id_token(id_token, check_revoked=True, clock_skew_seconds=60);
         email = decoded.get('email') or '';
         name = decoded.get('name') or '';
         uid = decoded.get('uid') or 'unknown';
@@ -153,7 +188,8 @@ def handle_client(conn: socket.socket, addr):
         conn.settimeout(None);
 
         with clients_lock:
-            clients.append(conn);
+            if conn not in clients:
+                clients.append(conn);
             socket_to_user[conn] = user_label;
 
         welcome = f"[Server] {user_label} joined";
@@ -203,13 +239,16 @@ def handle_client(conn: socket.socket, addr):
         try:
             conn.close();
         finally:
-            with clients_lock:
-                try:
-                    clients.remove(conn);
-                except ValueError:
-                    pass;
-                socket_to_user.pop(conn, None);
+            # Fetch name before removing mapping
             name = socket_to_user.get(conn);
+            with clients_lock:
+                # Remove all occurrences defensively
+                while True:
+                    try:
+                        clients.remove(conn);
+                    except ValueError:
+                        break;
+                socket_to_user.pop(conn, None);
             left = f"[Server] {(name or str(addr))} left";
             print(left);
             broadcast(left, exclude_socket=None);
@@ -227,8 +266,6 @@ print("Server is listening on port 8080...");
 try:
     while True:
         conn, addr = host_Server.accept();
-        with clients_lock:
-            clients.append(conn);
         print(f"Connection from {addr} has been established!");
         threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start();
 except KeyboardInterrupt:
