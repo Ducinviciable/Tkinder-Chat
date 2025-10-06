@@ -1,6 +1,3 @@
-"""
-Main entry point for the chat client application.
-"""
 import tkinter as tk
 from Chat.Client.ui.login_window import LoginWindow
 from Chat.Client.ui.chat_window import ChatWindow

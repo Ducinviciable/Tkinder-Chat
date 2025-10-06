@@ -1,6 +1,3 @@
-"""
-Login window module for chat client.
-"""
 import tkinter as tk
 from tkinter import messagebox
 from Chat.Client.auth import firebase_sign_in

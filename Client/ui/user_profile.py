@@ -1,6 +1,3 @@
-"""
-User profile UI components: friend requests list and actions.
-"""
 import tkinter as tk
 
 

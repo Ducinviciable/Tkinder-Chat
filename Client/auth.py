@@ -1,6 +1,3 @@
-"""
-Firebase authentication module for chat client.
-"""
 import json
 import urllib.request
 import urllib.error

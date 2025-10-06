@@ -1,6 +1,3 @@
-"""
-Chat window module for chat client.
-"""
 import tkinter as tk
 from tkinter import scrolledtext, messagebox
 from tkinter import ttk

@@ -1,21 +1,20 @@
 # Tkinter Chat Application
 
-A real-time chat application built with Python Tkinter and Firebase authentication.
+A real-time chat app using Python Tkinter, Firebase Auth, and a socket server.
 
 ## Features
 
-- Real-time text messaging
-- Firebase authentication
-- Socket-based communication
-- Cross-platform support
+- Real-time messaging
+- Firebase Email/Password authentication
+- Friend features (UI ready): Find friend by email, send/accept/reject requests
+- Modular server with Firebase Admin lookup (FIND_USER)
 
 ## Quick Start (Windows/PowerShell)
 
 ### Prerequisites
 
-- Python 3.7 or higher
-- Git
-- Firebase project with Email/Password auth enabled
+- Python 3.8+
+- Firebase project with Email/Password enabled
 
 ### 1) Clone & create virtual env
 
@@ -39,9 +38,9 @@ pip install firebase-admin python-dotenv
 3. Copy Web API Key: Project settings → General → Web API Key
 4. Generate Service Account key: Project settings → Service accounts → Generate new private key (download JSON)
 
-### 4) Configure .env (preferred)
+### 4) Configure .env
 
-The app now auto-loads `.env` via python-dotenv in both `lib/firebase.py` and `Server/server.py`.
+Both client and server auto-load `.env`.
 
 ```powershell
 copy env.example .env
@@ -68,7 +67,7 @@ Server (Terminal 1):
 
 ```powershell
 cd Server
-python server.py
+python main.py
 ```
 
 Client (Terminal 2):
@@ -78,7 +77,7 @@ cd Client
 python run.py
 ```
 
-You should see on server: `Server is listening on port 8080...` and `[Auth] Firebase initialized from environment variable` (or file/default).
+Server should print: `Server is listening on port 8080...` and Firebase init logs.
 
 ### 6) Verify
 
@@ -86,7 +85,7 @@ You should see on server: `Server is listening on port 8080...` and `[Auth] Fire
 python -c "from lib.firebase import API_KEY; print('Firebase API Key loaded:', 'Yes' if API_KEY else 'No')"
 ```
 
-Client flow: open login → register/login → chat.
+Client flow: login → chat → Find Friend tab.
 
 ## Security Notes
 
@@ -103,14 +102,31 @@ Chat/
 │   ├── auth.py      # Authentication logic
 │   ├── network.py   # Network communication
 │   └── run.py       # Main client entry point
-├── Server/          # Server application
-│   └── server.py    # Socket server with Firebase auth
-├── lib/             # Shared libraries
-│   ├── firebase.py  # Firebase configuration (loads .env)
-│   └── firebase-service.json  # optional local creds (git-ignored)
-├── env.example      # sample .env to copy
+├── Server/          # Server application (modular)
+│   ├── main.py                 # Socket config, accept loop
+│   ├── handler.py              # Per-connection I/O, AUTH, broadcast, CMD routing
+│   ├── commands.py             # Command handlers (FIND_USER, ...)
+│   ├── firebase_admin_utils.py # Firebase Admin init, verify, get_user_by_email
+│   └── state.py                # Shared in-memory state (clients, locks, socket→user)
+├── lib/
+│   ├── firebase.py             # Firebase configuration (loads .env)
+│   └── firebase-service.json   # optional local creds (git-ignored)
+├── env.example                 # sample .env to copy
 └── README.md
 ```
+
+## Friend Features (UI and Server command)
+
+- UI (Client `ui/chat_window.py`):
+  - Tab “Tìm bạn”: nhập email, nút Tìm → gửi `CMD FIND_USER` đến server.
+  - Khi tìm thấy: hiện thẻ kết quả (tên, email, nút gửi yêu cầu). Nếu trùng email của chính mình, nút gửi bị vô hiệu.
+  - Tab “Profile”: hiển thị danh sách yêu cầu (demo tự nạp lần đầu mở tab).
+
+- Server `CMD FIND_USER` (Firebase Admin):
+  - Input: `{"type":"FIND_USER","email":"someone@gmail.com"}`
+  - Output: `CMD {"type":"FIND_USER_RESULT","found":true|false,"email":"...","displayName":"...","uid":"..."}`
+
+Note: Gửi/duyệt/từ chối yêu cầu hiện là demo UI; cần bổ sung endpoint và DB (Firestore) để lưu thật.
 
 ## Troubleshooting
 
