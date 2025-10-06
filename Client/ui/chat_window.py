@@ -34,6 +34,7 @@ class ChatWindow:
         # Main notebook for tabs
         self.notebook = ttk.Notebook(self.master)
         self.notebook.grid(row=0, column=0, padx=8, pady=8, sticky='nsew')
+        self._demo_profile_loaded = False
 
         # --- Chat tab ---
         self.tab_chat = tk.Frame(self.notebook)
@@ -107,6 +108,9 @@ class ChatWindow:
         # Initialize friend requests list empty; can be set via set_friend_requests later
         self.tab_profile.set_friend_requests([])
         
+        # Bind to load demo data on first open of Profile tab
+        self.notebook.bind('<<NotebookTabChanged>>', self._on_tab_changed)
+        
     def _connect_to_server(self, id_token: str):
         """Connect to server with authentication."""
         success, err = self.network.connect(id_token)
@@ -117,7 +121,32 @@ class ChatWindow:
             messagebox.showerror('Connection Error', err or f'Could not connect to {self.network.host}:{self.network.port}')
             
     def _on_message_received(self, message: str):
+        # Handle command responses prefixed with 'CMD '
+        if message.startswith('CMD '):
+            try:
+                import json as _json
+                obj = _json.loads(message[4:])
+            except Exception:
+                return
+            msg_type = (obj.get('type') or '').upper()
+            if msg_type == 'FIND_USER_RESULT':
+                self._handle_find_user_result(obj)
+                return
+            # Unknown command message; log for debugging
+            self.master.after(0, self.log, message)
+            return
         self.master.after(0, self.log, message)
+    
+    def _on_tab_changed(self, _event=None):
+        current = self.notebook.select()
+        if current == str(self.tab_profile) and not self._demo_profile_loaded:
+            # Demo data for friend requests
+            self.tab_profile.set_friend_requests([
+                'alice@gmail.com',
+                'bob@gmail.com',
+                'charlie@gmail.com',
+            ])
+            self._demo_profile_loaded = True
         
     def log(self, text: str):
         self.output.configure(state=tk.NORMAL)
@@ -181,26 +210,10 @@ class ChatWindow:
         if not email:
             messagebox.showwarning('Thiếu thông tin', 'Vui lòng nhập email Gmail.')
             return
-        # TODO: integrate with Firebase to check user existence by email
-        # For now, simulate: treat any email containing '@' as existing
-        if '@' in email:
-            self._found_user_email = email
-            # Derive a display name from email prefix as placeholder
-            display_name = email.split('@', 1)[0]
-            self.label_found_name.configure(text=display_name)
-            self.label_found_email.configure(text=email)
-            # Disable sending to self
-            if self.current_user_email and email.strip().lower() == self.current_user_email:
-                self.btn_send_request.configure(state=tk.DISABLED)
-            else:
-                self.btn_send_request.configure(state=tk.NORMAL)
-            self.result_card.grid()  # show card
-            messagebox.showinfo('Tìm bạn', f'Đã tìm thấy người dùng: {email}')
-        else:
-            self._found_user_email = None
-            self.btn_send_request.configure(state=tk.DISABLED)
-            self.result_card.grid_remove()
-            messagebox.showerror('Tìm bạn', 'Người dùng không tồn tại.')
+        # Send command to server to find user by email via Firebase Admin
+        sent = self.network.send_command({ 'type': 'FIND_USER', 'email': email })
+        if not sent:
+            messagebox.showerror('Lỗi mạng', 'Không thể gửi yêu cầu tìm kiếm đến server.')
 
     def send_friend_request(self):
         if not self._found_user_email:
@@ -210,6 +223,34 @@ class ChatWindow:
         messagebox.showinfo('Yêu cầu kết bạn', f'Đã gửi yêu cầu kết bạn đến {self._found_user_email}.')
         self.btn_send_request.configure(state=tk.DISABLED)
         self.result_card.grid_remove()
+
+    def _handle_find_user_result(self, obj):
+        found = bool(obj.get('found'))
+        if not found:
+            self._found_user_email = None
+            self.btn_send_request.configure(state=tk.DISABLED)
+            self.result_card.grid_remove()
+            error = obj.get('error') or 'Người dùng không tồn tại.'
+            try:
+                # If server returned a prefixed error, simplify message
+                if 'not_found' in error:
+                    error = 'Người dùng không tồn tại.'
+            except Exception:
+                pass
+            messagebox.showerror('Tìm bạn', error)
+            return
+        email = obj.get('email') or ''
+        display_name = obj.get('displayName') or (email.split('@', 1)[0] if '@' in email else email)
+        self._found_user_email = email
+        self.label_found_name.configure(text=display_name)
+        self.label_found_email.configure(text=email)
+        # Disable sending to self
+        if self.current_user_email and email.strip().lower() == self.current_user_email:
+            self.btn_send_request.configure(state=tk.DISABLED)
+        else:
+            self.btn_send_request.configure(state=tk.NORMAL)
+        self.result_card.grid()
+        messagebox.showinfo('Tìm bạn', f'Đã tìm thấy người dùng: {email}')
 
     def accept_friend_request(self):
         selection = self.tab_profile.get_selected_request()

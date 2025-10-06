@@ -87,6 +87,19 @@ class ChatNetwork:
             self.disconnect()
             return False
 
+    def send_command(self, obj: dict) -> bool:
+        """Send a JSON command line prefixed with 'CMD '."""
+        if not self.is_connected or self.client_socket is None:
+            return False
+        try:
+            payload = 'CMD ' + __import__('json').dumps(obj)
+            data_to_send = (payload + '\n').encode('utf-8')
+            self.client_socket.sendall(data_to_send)
+            return True
+        except Exception:
+            self.disconnect()
+            return False
+
     def disconnect(self):
         try:
             if self.client_socket is not None:

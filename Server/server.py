@@ -212,6 +212,17 @@ def handle_client(conn: socket.socket, addr):
                         text = line.decode('utf-8', errors='replace');
                     except Exception:
                         text = '[binary data]';
+                    # Intercept command lines (not broadcasted)
+                    if text.startswith('CMD '):
+                        try:
+                            _handle_command_line(conn, text[4:]);
+                        except Exception as e:
+                            try:
+                                err = { 'type': 'ERROR', 'message': f'cmd_failed: {e}' };
+                                conn.sendall(("CMD " + json.dumps(err) + "\n").encode('utf-8'));
+                            except Exception:
+                                pass;
+                        continue;
                     if text.lower() == 'exit':
                         raise ConnectionAbortedError('Client requested exit');
                     sender = socket_to_user.get(conn, str(addr));
@@ -225,6 +236,18 @@ def handle_client(conn: socket.socket, addr):
                         except Exception:
                             text = '';
                         if text:
+                            # Intercept command chunk (rare case when no newline yet but buffer flushes)
+                            if text.startswith('CMD '):
+                                try:
+                                    _handle_command_line(conn, text[4:]);
+                                except Exception as e:
+                                    try:
+                                        err = { 'type': 'ERROR', 'message': f'cmd_failed: {e}' };
+                                        conn.sendall(("CMD " + json.dumps(err) + "\n").encode('utf-8'));
+                                    except Exception:
+                                        pass;
+                                buffer = b'';
+                                continue;
                             sender = socket_to_user.get(conn, str(addr));
                             print(f"{sender}: {text}");
                             broadcast(f"{sender}: {text}", exclude_socket=conn);
@@ -252,6 +275,43 @@ def handle_client(conn: socket.socket, addr):
             left = f"[Server] {(name or str(addr))} left";
             print(left);
             broadcast(left, exclude_socket=None);
+
+
+def _handle_command_line(conn: socket.socket, cmd_json_text: str):
+    """Handle a single-line command. Input is JSON text after 'CMD '."""
+    try:
+        obj = json.loads(cmd_json_text);
+    except Exception:
+        resp = { 'type': 'ERROR', 'message': 'invalid_json' };
+        conn.sendall(("CMD " + json.dumps(resp) + "\n").encode('utf-8'));
+        return;
+    cmd_type = (obj.get('type') or '').upper();
+    if cmd_type == 'FIND_USER':
+        email = (obj.get('email') or '').strip();
+        if not email:
+            resp = { 'type': 'FIND_USER_RESULT', 'found': False, 'error': 'missing_email' };
+            conn.sendall(("CMD " + json.dumps(resp) + "\n").encode('utf-8'));
+            return;
+        if not _FIREBASE_AVAILABLE:
+            resp = { 'type': 'FIND_USER_RESULT', 'found': False, 'error': 'auth_unavailable' };
+            conn.sendall(("CMD " + json.dumps(resp) + "\n").encode('utf-8'));
+            return;
+        _init_firebase_if_needed();
+        if not _firebase_initialized:
+            resp = { 'type': 'FIND_USER_RESULT', 'found': False, 'error': 'auth_not_initialized' };
+            conn.sendall(("CMD " + json.dumps(resp) + "\n").encode('utf-8'));
+            return;
+        try:
+            user_record = fb_auth.get_user_by_email(email);
+            display_name = user_record.display_name or '';
+            uid = user_record.uid or '';
+            resp = { 'type': 'FIND_USER_RESULT', 'found': True, 'email': email, 'displayName': display_name, 'uid': uid };
+        except Exception as e:
+            resp = { 'type': 'FIND_USER_RESULT', 'found': False, 'error': f'not_found_or_error: {e}' };
+        conn.sendall(("CMD " + json.dumps(resp) + "\n").encode('utf-8'));
+    else:
+        resp = { 'type': 'ERROR', 'message': 'unknown_command' };
+        conn.sendall(("CMD " + json.dumps(resp) + "\n").encode('utf-8'));
 
 
 # Server Configuration
