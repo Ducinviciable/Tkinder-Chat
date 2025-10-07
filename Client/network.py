@@ -1,6 +1,3 @@
-"""
-Network communication module for chat client.
-"""
 import socket
 import threading
 from typing import Optional
@@ -18,10 +15,6 @@ class ChatNetwork:
         self.receive_callback = callback
         
     def connect(self, id_token: str) -> tuple[bool, Optional[str]]:
-        """Attempt to connect and authenticate.
-
-        Returns (success, error_message). On success, error_message is None.
-        """
         if self.is_connected:
             return True, None
 
@@ -81,6 +74,18 @@ class ChatNetwork:
             
         try:
             data_to_send = (message + '\n').encode('utf-8')
+            self.client_socket.sendall(data_to_send)
+            return True
+        except Exception:
+            self.disconnect()
+            return False
+
+    def send_command(self, obj: dict) -> bool:
+        if not self.is_connected or self.client_socket is None:
+            return False
+        try:
+            payload = 'CMD ' + __import__('json').dumps(obj)
+            data_to_send = (payload + '\n').encode('utf-8')
             self.client_socket.sendall(data_to_send)
             return True
         except Exception:
