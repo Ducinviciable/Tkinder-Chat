@@ -3,6 +3,8 @@ from tkinter import scrolledtext, messagebox
 from tkinter import ttk
 from Chat.Client.network import ChatNetwork
 from Chat.Client.ui.user_profile import UserProfileFrame
+from Chat.Client.ui.find_friend import FindFriendFrame
+from Chat.Client.ui.friends_tab import FriendsTabFrame
 
 
 class ChatWindow:
@@ -12,32 +14,45 @@ class ChatWindow:
         self.master.title('Chat Client')
         self.master.protocol('WM_DELETE_WINDOW', self.on_close)
         
-        # Network
+        # Network Information
         self.network = ChatNetwork(host, port)
         self.network.set_receive_callback(self._on_message_received)
-        # Keep the id_token so reconnects can reuse it
         self.id_token = id_token
-        # Current user's email for friend features
         self.current_user_email = (current_email or '').strip().lower() or None
         
         self._setup_ui()
         self._connect_to_server(id_token)
-        
+
+    # -------------------- UI setup --------------------
     def _setup_ui(self):
         # Root grid configuration
         self.master.rowconfigure(0, weight=1)
         self.master.columnconfigure(0, weight=1)
 
-        # Main notebook for tabs
-        self.notebook = ttk.Notebook(self.master)
-        self.notebook.grid(row=0, column=0, padx=8, pady=8, sticky='nsew')
-        self._demo_profile_loaded = False
+        top_frame = tk.Frame(self.master)
+        top_frame.grid(row=0, column=0, padx=8, pady=8, sticky='nsew')
+        top_frame.columnconfigure(0, weight=1)
+        top_frame.rowconfigure(1, weight=1)
 
-        # --- Chat tab ---
+        user_box = tk.Frame(top_frame)
+        user_box.grid(row=0, column=0, sticky='w', pady=(0, 4))
+        tk.Label(user_box, text='User:').pack(side='left', padx=(0, 4))
+        self.entry_username = tk.Entry(user_box, width=25)
+        self.entry_username.insert(0, self.current_user_email or "Unknown")
+        self.entry_username.configure(state='readonly')
+        self.entry_username.pack(side='left')
+
+        self.notebook = ttk.Notebook(top_frame)
+        self.notebook.grid(row=1, column=0, sticky='nsew')
+        self._demo_profile_loaded = False
+        self._friends_loaded = False
+        self._friends = []  # list of dicts {uid,email,displayName}
+        self._incoming_requests = []  # list of dicts {requestId, fromUid, fromEmail, createdAt}
+        self._refresh_req_job = None
+
         self.tab_chat = tk.Frame(self.notebook)
         self.notebook.add(self.tab_chat, text='Chat')
 
-        # Chat output area
         self.output = scrolledtext.ScrolledText(
             self.tab_chat, wrap=tk.WORD, state=tk.DISABLED,
             width=60, height=18
@@ -48,11 +63,13 @@ class ChatWindow:
         tk.Label(self.tab_chat, text='Host:').grid(row=1, column=0, padx=(8, 2), pady=8, sticky='w')
         self.entry_host = tk.Entry(self.tab_chat, width=15)
         self.entry_host.insert(0, self.network.host)
+        self.entry_host.configure(state='readonly')
         self.entry_host.grid(row=1, column=1, padx=2, pady=8, sticky='w')
 
         tk.Label(self.tab_chat, text='Port:').grid(row=1, column=2, padx=(8, 2), pady=8, sticky='w')
-        self.entry_port = tk.Entry(self.tab_chat, width=8)
-        self.entry_port.insert(0, str(self.network.port))
+        self.entry_port = tk.Entry(self.tab_chat, width=8,)
+        self.entry_port.insert(0, str(self.network.port),)
+        self.entry_port.configure(state='readonly')
         self.entry_port.grid(row=1, column=3, padx=2, pady=8, sticky='w')
 
         # Message input row
@@ -70,55 +87,38 @@ class ChatWindow:
         self.tab_chat.rowconfigure(0, weight=1)
         self.tab_chat.columnconfigure(0, weight=1)
 
-        # --- Tìm bạn tab ---
-        self.tab_find = tk.Frame(self.notebook)
+        # --- Find friend tab ---
+        self.tab_find = FindFriendFrame(self.notebook, on_search=self._search_friend_ui, on_send_request=self.send_friend_request)
         self.notebook.add(self.tab_find, text='Tìm bạn')
 
-        # Search instruction
-        tk.Label(self.tab_find, text='Nhập email Gmail:').grid(row=0, column=0, padx=8, pady=(12, 4), sticky='w')
-        self.entry_search_email = tk.Entry(self.tab_find, width=40)
-        self.entry_search_email.grid(row=1, column=0, padx=8, pady=4, sticky='w')
-        self.entry_search_email.bind('<Return>', lambda _e: self.search_friend())
-
-        self.btn_search = tk.Button(self.tab_find, text='Tìm', command=self.search_friend)
-        self.btn_search.grid(row=1, column=1, padx=8, pady=4, sticky='w')
-
-        # Result card (hidden initially)
-        self.result_card = tk.Frame(self.tab_find, relief=tk.GROOVE, borderwidth=1)
-        self.result_card.grid(row=2, column=0, columnspan=2, padx=8, pady=(8, 12), sticky='ew')
-        self.result_card.columnconfigure(0, weight=1)
-        self.label_found_name = tk.Label(self.result_card, text='', font=('TkDefaultFont', 10, 'bold'))
-        self.label_found_name.grid(row=0, column=0, padx=8, pady=(8, 2), sticky='w')
-        self.label_found_email = tk.Label(self.result_card, text='', fg='gray')
-        self.label_found_email.grid(row=1, column=0, padx=8, pady=(0, 8), sticky='w')
-        self.btn_send_request = tk.Button(self.result_card, text='Gửi yêu cầu kết bạn', command=self.send_friend_request, state=tk.DISABLED)
-        self.btn_send_request.grid(row=0, column=1, rowspan=2, padx=8, pady=8, sticky='e')
-        # Hide card initially
-        self.result_card.grid_remove()
-
-        # Placeholder to keep found user email
         self._found_user_email = None
 
         # --- Profile tab ---
-        self.tab_profile = UserProfileFrame(self.notebook, on_accept=self.accept_friend_request, on_reject=self.reject_friend_request)
+        self.tab_profile = UserProfileFrame(self.notebook, on_accept=self.accept_friend_request, on_reject=self.reject_friend_request, on_refresh=self._refresh_requests)
         self.notebook.add(self.tab_profile, text='Profile')
         # Initialize friend requests list empty; can be set via set_friend_requests later
         self.tab_profile.set_friend_requests([])
         
         # Bind to load demo data on first open of Profile tab
         self.notebook.bind('<<NotebookTabChanged>>', self._on_tab_changed)
+
+        # --- Friends tab ---
+        self.tab_friends = FriendsTabFrame(self.notebook, on_open_dm=self._open_dm_from_friend, on_refresh=lambda: self.network.send_command({ 'type': 'LIST_FRIENDS' }))
+        self.notebook.add(self.tab_friends, text='Bạn bè')
         
     def _connect_to_server(self, id_token: str):
         """Connect to server with authentication."""
         success, err = self.network.connect(id_token)
         if success:
             self.log(f'Connected to {self.network.host}:{self.network.port} (authenticated)')
+            try:
+                self.network.send_command({ 'type': 'LIST_FRIENDS' })
+            except Exception:
+                pass
         else:
-            # Show the detailed error and keep window open so user can edit host/port
             messagebox.showerror('Connection Error', err or f'Could not connect to {self.network.host}:{self.network.port}')
             
     def _on_message_received(self, message: str):
-        # Handle command responses prefixed with 'CMD '
         if message.startswith('CMD '):
             try:
                 import json as _json
@@ -129,21 +129,45 @@ class ChatWindow:
             if msg_type == 'FIND_USER_RESULT':
                 self._handle_find_user_result(obj)
                 return
-            # Unknown command message; log for debugging
+            if msg_type == 'FRIENDS':
+                self._handle_friends(obj)
+                return
+            if msg_type == 'FRIEND_REQUEST_SENT':
+                self._handle_friend_request_sent(obj)
+                return
+            if msg_type == 'FRIEND_REQUEST_ACCEPTED':
+                self._handle_friend_request_accepted(obj)
+                return
+            if msg_type == 'FRIEND_REQUEST_REJECTED':
+                self._handle_friend_request_rejected(obj)
+                return
+            if msg_type == 'FRIEND_REQUESTS':
+                self._handle_friend_requests(obj)
+                return
             self.master.after(0, self.log, message)
             return
         self.master.after(0, self.log, message)
     
     def _on_tab_changed(self, _event=None):
         current = self.notebook.select()
-        if current == str(self.tab_profile) and not self._demo_profile_loaded:
-            # Demo data for friend requests
-            self.tab_profile.set_friend_requests([
-                'alice@gmail.com',
-                'bob@gmail.com',
-                'charlie@gmail.com',
-            ])
-            self._demo_profile_loaded = True
+        if current == str(self.tab_profile):
+            self._refresh_requests()
+        if current == str(self.tab_friends):
+            try:
+                self.network.send_command({ 'type': 'LIST_FRIENDS' })
+            except Exception:
+                pass
+
+    def _refresh_requests(self):
+        try:
+            self.network.send_command({ 'type': 'FRIEND_REQUESTS' })
+        except Exception:
+            pass
+        # Schedule next refresh in 5 seconds
+        try:
+            self._refresh_req_job = self.master.after(5000, self._refresh_requests)
+        except Exception:
+            self._refresh_req_job = None
         
     def log(self, text: str):
         self.output.configure(state=tk.NORMAL)
@@ -201,9 +225,9 @@ class ChatWindow:
         # Clear input
         self.entry_message.delete(0, tk.END)
 
-    # -------------------- Friend features (stubs) --------------------
-    def search_friend(self):
-        email = (self.entry_search_email.get() or '').strip()
+    # -------------------- Friend features --------------------
+    def _search_friend_ui(self, email_input: str):
+        email = (email_input or '').strip()
         if not email:
             messagebox.showwarning('Thiếu thông tin', 'Vui lòng nhập email Gmail.')
             return
@@ -216,10 +240,11 @@ class ChatWindow:
         if not self._found_user_email:
             messagebox.showwarning('Chưa chọn người dùng', 'Hãy tìm và chọn người dùng trước.')
             return
-        # TODO: integrate with Firebase to create a friend request
-        messagebox.showinfo('Yêu cầu kết bạn', f'Đã gửi yêu cầu kết bạn đến {self._found_user_email}.')
-        self.btn_send_request.configure(state=tk.DISABLED)
-        self.result_card.grid_remove()
+        # Send to server
+        sent = self.network.send_command({ 'type': 'SEND_FRIEND_REQUEST', 'toEmail': self._found_user_email })
+        if not sent:
+            messagebox.showerror('Lỗi mạng', 'Không thể gửi yêu cầu kết bạn đến server.')
+            return
 
     def _handle_find_user_result(self, obj):
         found = bool(obj.get('found'))
@@ -239,33 +264,182 @@ class ChatWindow:
         email = obj.get('email') or ''
         display_name = obj.get('displayName') or (email.split('@', 1)[0] if '@' in email else email)
         self._found_user_email = email
-        self.label_found_name.configure(text=display_name)
-        self.label_found_email.configure(text=email)
-        # Disable sending to self
+        self.tab_find.show_result(email, display_name, can_send=False)
+        # Disable sending to self or existing friend
         if self.current_user_email and email.strip().lower() == self.current_user_email:
-            self.btn_send_request.configure(state=tk.DISABLED)
+            self.tab_find.disable_send()
+        elif any((email.strip().lower() == (f.get('email') or '').strip().lower()) for f in (self._friends or [])):
+            self.tab_find.disable_send()
+            try:
+                messagebox.showinfo('Kết bạn', 'Người dùng này đã là bạn của bạn.')
+            except Exception:
+                pass
         else:
-            self.btn_send_request.configure(state=tk.NORMAL)
-        self.result_card.grid()
+            self.tab_find.show_result(email, display_name, can_send=True)
         messagebox.showinfo('Tìm bạn', f'Đã tìm thấy người dùng: {email}')
 
-    def accept_friend_request(self):
-        selection = self.tab_profile.get_selected_request()
-        if not selection:
-            return
-        requester_email = selection
-        # TODO: integrate with Firebase to accept the friend request
-        messagebox.showinfo('Kết bạn', f'Đã chấp nhận lời mời từ {requester_email}.')
-        self.tab_profile.remove_selected_request()
+    def _handle_friends(self, obj):
+        friends = obj.get('friends') or []
+        self._friends = friends
+        self._friends_loaded = True
+        self.tab_friends.set_friends(friends)
 
-    def reject_friend_request(self):
-        selection = self.tab_profile.get_selected_request()
-        if not selection:
+    def _on_friend_select(self):
+        has = bool(self.friends_list.curselection())
+        self.btn_dm.configure(state=tk.NORMAL if has else tk.DISABLED)
+
+    def _open_dm_from_friend(self, friend):
+        title = friend.get('displayName') or friend.get('email') or friend.get('uid') or 'DM'
+        if not hasattr(self, '_dm_tabs'):
+            self._dm_tabs = {}
+        key = friend.get('uid') or friend.get('email') or str(idx)
+        if key in self._dm_tabs:
+            self.notebook.select(self._dm_tabs[key]['frame'])
             return
-        requester_email = selection
-        # TODO: integrate with Firebase to reject the friend request
-        messagebox.showinfo('Kết bạn', f'Đã từ chối lời mời từ {requester_email}.')
-        self.tab_profile.remove_selected_request()
+        frame = tk.Frame(self.notebook)
+        self.notebook.add(frame, text=f"Chat: {title}")
+        self.notebook.select(frame)
+        # Header with peer info
+        header = tk.Frame(frame)
+        header.grid(row=0, column=0, columnspan=3, sticky='ew', padx=8, pady=(8, 0))
+        header.columnconfigure(0, weight=1)
+        tk.Label(header, text=title, font=('TkDefaultFont', 10, 'bold')).pack(side='left')
+        tk.Label(header, text=friend.get('email') or '', fg='gray').pack(side='right')
+
+        transcript = scrolledtext.ScrolledText(frame, wrap=tk.WORD, state=tk.DISABLED, width=60, height=18)
+        transcript.grid(row=1, column=0, columnspan=3, padx=8, pady=8, sticky='nsew')
+        entry = tk.Entry(frame, width=50)
+        entry.grid(row=2, column=0, padx=8, pady=(0,8), sticky='ew')
+        send_btn = tk.Button(frame, text='Gửi', command=lambda: self._send_dm(friend, entry, transcript))
+        send_btn.grid(row=2, column=1, padx=4, pady=(0,8))
+        entry.bind('<Return>', lambda _e: self._send_dm(friend, entry, transcript))
+        frame.rowconfigure(1, weight=1)
+        frame.columnconfigure(0, weight=1)
+        self._dm_tabs[key] = { 'frame': frame, 'transcript': transcript, 'entry': entry, 'friend': friend }
+
+    def _send_dm(self, friend, entry_widget, transcript_widget):
+        text = (entry_widget.get() or '').strip()
+        if not text:
+            return
+        try:
+            transcript_widget.configure(state=tk.NORMAL)
+            transcript_widget.insert(tk.END, f"Me → {friend.get('displayName') or friend.get('email')}: {text}\n")
+            transcript_widget.configure(state=tk.DISABLED)
+            transcript_widget.see(tk.END)
+        except Exception:
+            pass
+        entry_widget.delete(0, tk.END)
+
+    def accept_friend_request(self, requester_email=None):
+        if requester_email is None:
+            selection = self.tab_profile.get_selected_request()
+            if not selection:
+                return
+            requester_email = selection
+        # include requestId/fromUid if available for efficient server handling
+        req = next((r for r in (self._incoming_requests or []) if (r.get('fromEmail') == requester_email) or (r.get('fromUid') and r.get('fromUid') == requester_email)), None)
+        payload = { 'type': 'ACCEPT_REQUEST' }
+        if req:
+            if req.get('fromUid'):
+                payload['fromUid'] = req['fromUid']
+            if req.get('requestId'):
+                payload['requestId'] = req['requestId']
+            if req.get('fromEmail'):
+                payload['fromEmail'] = req['fromEmail']
+        else:
+            payload['fromEmail'] = requester_email
+        sent = self.network.send_command(payload)
+        if not sent:
+            messagebox.showerror('Lỗi mạng', 'Không thể gửi yêu cầu chấp nhận đến server.')
+            return
+
+    def reject_friend_request(self, requester_email=None):
+        if requester_email is None:
+            selection = self.tab_profile.get_selected_request()
+            if not selection:
+                return
+            requester_email = selection
+        req = next((r for r in (self._incoming_requests or []) if (r.get('fromEmail') == requester_email) or (r.get('fromUid') and r.get('fromUid') == requester_email)), None)
+        payload = { 'type': 'REJECT_REQUEST' }
+        if req:
+            if req.get('fromUid'):
+                payload['fromUid'] = req['fromUid']
+            if req.get('requestId'):
+                payload['requestId'] = req['requestId']
+            if req.get('fromEmail'):
+                payload['fromEmail'] = req['fromEmail']
+        else:
+            payload['fromEmail'] = requester_email
+        sent = self.network.send_command(payload)
+        if not sent:
+            messagebox.showerror('Lỗi mạng', 'Không thể gửi yêu cầu từ chối đến server.')
+            return
+
+    def _handle_friend_request_sent(self, obj):
+        ok = bool(obj.get('ok'))
+        if ok:
+            messagebox.showinfo('Yêu cầu kết bạn', f'Đã gửi yêu cầu kết bạn đến {self._found_user_email}.')
+            self.btn_send_request.configure(state=tk.DISABLED)
+            self.result_card.grid_remove()
+        else:
+            err = obj.get('error') or 'Không gửi được yêu cầu.'
+            messagebox.showerror('Yêu cầu kết bạn', err)
+
+    def _handle_friend_request_accepted(self, obj):
+        ok = bool(obj.get('ok'))
+        if ok:
+            # Remove from UI list
+            self.tab_profile.remove_selected_request()
+            messagebox.showinfo('Kết bạn', 'Đã chấp nhận lời mời kết bạn.')
+            # Refresh friends list
+            try:
+                self.network.send_command({ 'type': 'LIST_FRIENDS' })
+            except Exception:
+                pass
+            # Refresh incoming requests as well
+            try:
+                self.network.send_command({ 'type': 'FRIEND_REQUESTS' })
+            except Exception:
+                pass
+            # Switch to Bạn bè tab to show the new friend
+            try:
+                self.notebook.select(self.tab_friends)
+            except Exception:
+                pass
+        else:
+            err = obj.get('error') or 'Không chấp nhận được lời mời.'
+            messagebox.showerror('Kết bạn', err)
+
+    def _handle_friend_request_rejected(self, obj):
+        ok = bool(obj.get('ok'))
+        if ok:
+            # Remove from UI list
+            self.tab_profile.remove_selected_request()
+            messagebox.showinfo('Kết bạn', 'Đã từ chối lời mời kết bạn.')
+            try:
+                self.network.send_command({ 'type': 'FRIEND_REQUESTS' })
+            except Exception:
+                pass
+        else:
+            err = obj.get('error') or 'Không từ chối được lời mời.'
+            messagebox.showerror('Kết bạn', err)
+
+    def _handle_friend_requests(self, obj):
+        requests = obj.get('requests') or []
+        # Save raw for later accept/reject payloads
+        self._incoming_requests = requests
+        # Populate listbox with email fallback to fromUid
+        emails = []
+        for r in requests:
+            email = r.get('fromEmail') or r.get('fromUid') or ''
+            if email:
+                emails.append(email)
+        self.tab_profile.set_friend_requests(emails)
+
+        # try:
+        #     self.log(f"[FriendRequests] Loaded {len(emails)} request(s)")
+        # except Exception:
+        #     pass
 
     def set_friend_requests(self, requester_emails):
         """Replace the list of incoming friend requests shown in Profile."""

@@ -15,7 +15,7 @@ class LoginWindow:
         self._setup_ui()
         
     def _setup_ui(self):
-        """Setup the login window UI."""
+
         # Set window size and center it
         self.master.geometry('500x500')
         self.master.resizable(False, False)
@@ -50,7 +50,6 @@ class LoginWindow:
         self._setup_login_button(main_frame)
         
     def _setup_server_settings(self, parent):
-        """Setup server settings section."""
         server_frame = tk.Frame(parent, bg='white')
         server_frame.pack(fill='x', pady=(0, 20))
         
@@ -77,7 +76,7 @@ class LoginWindow:
         self.entry_port.pack(side='left')
         
     def _setup_credentials(self, parent):
-        """Setup login credentials section."""
+        
         cred_frame = tk.Frame(parent, bg='white')
         cred_frame.pack(fill='x', pady=(0, 20))
         
@@ -106,7 +105,7 @@ class LoginWindow:
         self.entry_password.pack(fill='x', pady=(5, 0))
         
     def _setup_login_button(self, parent):
-        """Setup login button with hover effects."""
+        
         button_frame = tk.Frame(parent, bg='#f0f0f0')
         button_frame.pack(fill='x')
         
@@ -132,7 +131,7 @@ class LoginWindow:
         self.master.bind('<Return>', lambda e: self.do_login())
 
     def do_login(self):
-        """Handle login button click."""
+        
         host = self.entry_host.get().strip() or 'localhost'
         try:
             port = int(self.entry_port.get().strip() or '8080')
@@ -164,7 +163,7 @@ class LoginWindow:
             messagebox.showerror('Auth Error', f'Login failed: {e}')
 
     def on_close(self):
-        """Handle window close."""
+        
         try:
             self.master.destroy()
         except Exception:

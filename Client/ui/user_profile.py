@@ -2,12 +2,17 @@ import tkinter as tk
 
 
 class UserProfileFrame(tk.Frame):
-    def __init__(self, master, on_accept, on_reject):
+    def __init__(self, master, on_accept, on_reject, on_refresh=None):
         super().__init__(master)
         self.on_accept = on_accept
         self.on_reject = on_reject
+        self.on_refresh = on_refresh
 
-        tk.Label(self, text='Yêu cầu kết bạn đến:').grid(row=0, column=0, padx=8, pady=(12, 4), sticky='w')
+        header = tk.Frame(self)
+        header.grid(row=0, column=0, columnspan=2, sticky='ew')
+        tk.Label(header, text='Yêu cầu kết bạn đến:').pack(side='left', padx=8, pady=(12, 4))
+        self.btn_refresh = tk.Button(header, text='Làm mới', command=self._handle_refresh)
+        self.btn_refresh.pack(side='right', padx=8, pady=(12, 4))
 
         self.friend_requests_list = tk.Listbox(self, height=10, width=40, exportselection=False)
         self.friend_requests_list.grid(row=1, column=0, columnspan=2, padx=8, pady=4, sticky='nsew')
@@ -36,6 +41,13 @@ class UserProfileFrame(tk.Frame):
         email = self.get_selected_request()
         if email:
             self.on_reject(email)
+
+    def _handle_refresh(self):
+        if callable(self.on_refresh):
+            try:
+                self.on_refresh()
+            except Exception:
+                pass
 
     def set_friend_requests(self, requester_emails):
         self.friend_requests_list.delete(0, tk.END)

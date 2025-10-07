@@ -3,11 +3,11 @@ import socket
 
 try:
     from Chat.Server.firebase_admin_utils import verify_id_token
-    from Chat.Server.state import clients, clients_lock, socket_to_user
+    from Chat.Server.state import clients, clients_lock, socket_to_user, socket_to_uid
     from Chat.Server.commands import handle_command_line as commands_handle
 except Exception:
     from firebase_admin_utils import verify_id_token
-    from state import clients, clients_lock, socket_to_user
+    from state import clients, clients_lock, socket_to_user, socket_to_uid
     from commands import handle_command_line as commands_handle
 
 
@@ -53,7 +53,7 @@ def handle_client(conn: socket.socket, addr):
                 conn.sendall(b"AUTH_ERR Invalid handshake\n")
                 raise ConnectionAbortedError('Invalid handshake')
             id_token = text[5:].strip()
-            ok, label = verify_id_token(id_token)
+            ok, label, uid, email, name = verify_id_token(id_token)
             if not ok:
                 err_line = f"AUTH_ERR {label}\n".encode('utf-8', errors='replace')
                 conn.sendall(err_line)
@@ -67,8 +67,25 @@ def handle_client(conn: socket.socket, addr):
             if conn not in clients:
                 clients.append(conn)
             socket_to_user[conn] = label
+            try:
+                conn._chat_uid = uid  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            try:
+                socket_to_uid[conn] = uid
+            except Exception:
+                pass
+        # Ensure user profile exists
+        try:
+            from Chat.Server.firebase_admin_utils import ensure_user_profile as _ensure
+        except Exception:
+            from firebase_admin_utils import ensure_user_profile as _ensure
+        try:
+            _ensure(uid, email, name)
+        except Exception:
+            pass
 
-        welcome = f"[Server] {label} joined"
+        welcome = f"[Server] Welcome {label} joined"
         print(welcome)
         broadcast(welcome, exclude_socket=None)
         buffer = buffer if isinstance(buffer, (bytes, bytearray)) else b''
@@ -95,6 +112,10 @@ def handle_client(conn: socket.socket, addr):
                                 conn.sendall(("CMD {\"type\":\"ERROR\",\"message\":\"invalid_json\"}\n").encode('utf-8'))
                             except Exception:
                                 pass
+                        try:
+                            print(f"[CMD] raw line={text}")
+                        except Exception:
+                            pass
                             continue
                         try:
                             commands_handle(conn, obj)
@@ -152,6 +173,10 @@ def handle_client(conn: socket.socket, addr):
                     except ValueError:
                         break
                 socket_to_user.pop(conn, None)
+                try:
+                    socket_to_uid.pop(conn, None)
+                except Exception:
+                    pass
             left = f"[Server] {(name or str(addr))} left"
             print(left)
             broadcast(left, exclude_socket=None)
