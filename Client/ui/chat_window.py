@@ -5,6 +5,8 @@ from Chat.Client.network import ChatNetwork
 from Chat.Client.ui.user_profile import UserProfileFrame
 from Chat.Client.ui.find_friend import FindFriendFrame
 from Chat.Client.ui.friends_tab import FriendsTabFrame
+from Chat.Client.ui.private_chat import PrivateChatTab
+from Chat.Client.ui import cmd_handlers as CMD
 
 
 class ChatWindow:
@@ -127,22 +129,31 @@ class ChatWindow:
                 return
             msg_type = (obj.get('type') or '').upper()
             if msg_type == 'FIND_USER_RESULT':
-                self._handle_find_user_result(obj)
+                CMD.handle_find_user_result(self, obj)
                 return
             if msg_type == 'FRIENDS':
-                self._handle_friends(obj)
+                CMD.handle_friends(self, obj)
                 return
             if msg_type == 'FRIEND_REQUEST_SENT':
-                self._handle_friend_request_sent(obj)
+                CMD.handle_friend_request_sent(self, obj)
                 return
             if msg_type == 'FRIEND_REQUEST_ACCEPTED':
-                self._handle_friend_request_accepted(obj)
+                CMD.handle_friend_request_accepted(self, obj)
                 return
             if msg_type == 'FRIEND_REQUEST_REJECTED':
-                self._handle_friend_request_rejected(obj)
+                CMD.handle_friend_request_rejected(self, obj)
                 return
             if msg_type == 'FRIEND_REQUESTS':
-                self._handle_friend_requests(obj)
+                CMD.handle_friend_requests(self, obj)
+                return
+            if msg_type == 'DM':
+                CMD.handle_dm(self, obj)
+                return
+            if msg_type == 'DM_DELIVERED':
+                CMD.handle_dm_delivered(self, obj)
+                return
+            if msg_type == 'DM_HISTORY':
+                CMD.handle_dm_history(self, obj)
                 return
             self.master.after(0, self.log, message)
             return
@@ -246,89 +257,54 @@ class ChatWindow:
             messagebox.showerror('Lỗi mạng', 'Không thể gửi yêu cầu kết bạn đến server.')
             return
 
-    def _handle_find_user_result(self, obj):
-        found = bool(obj.get('found'))
-        if not found:
-            self._found_user_email = None
-            self.btn_send_request.configure(state=tk.DISABLED)
-            self.result_card.grid_remove()
-            error = obj.get('error') or 'Người dùng không tồn tại.'
-            try:
-                # If server returned a prefixed error, simplify message
-                if 'not_found' in error:
-                    error = 'Người dùng không tồn tại.'
-            except Exception:
-                pass
-            messagebox.showerror('Tìm bạn', error)
-            return
-        email = obj.get('email') or ''
-        display_name = obj.get('displayName') or (email.split('@', 1)[0] if '@' in email else email)
-        self._found_user_email = email
-        self.tab_find.show_result(email, display_name, can_send=False)
-        # Disable sending to self or existing friend
-        if self.current_user_email and email.strip().lower() == self.current_user_email:
-            self.tab_find.disable_send()
-        elif any((email.strip().lower() == (f.get('email') or '').strip().lower()) for f in (self._friends or [])):
-            self.tab_find.disable_send()
-            try:
-                messagebox.showinfo('Kết bạn', 'Người dùng này đã là bạn của bạn.')
-            except Exception:
-                pass
-        else:
-            self.tab_find.show_result(email, display_name, can_send=True)
-        messagebox.showinfo('Tìm bạn', f'Đã tìm thấy người dùng: {email}')
-
-    def _handle_friends(self, obj):
-        friends = obj.get('friends') or []
-        self._friends = friends
-        self._friends_loaded = True
-        self.tab_friends.set_friends(friends)
-
-    def _on_friend_select(self):
-        has = bool(self.friends_list.curselection())
-        self.btn_dm.configure(state=tk.NORMAL if has else tk.DISABLED)
-
+    
     def _open_dm_from_friend(self, friend):
-        title = friend.get('displayName') or friend.get('email') or friend.get('uid') or 'DM'
         if not hasattr(self, '_dm_tabs'):
             self._dm_tabs = {}
-        key = friend.get('uid') or friend.get('email') or str(idx)
+        key = friend.get('uid') or friend.get('email') or str(friend)
         if key in self._dm_tabs:
-            self.notebook.select(self._dm_tabs[key]['frame'])
+            try:
+                self._dm_tabs[key].focus()
+            except Exception:
+                pass
             return
-        frame = tk.Frame(self.notebook)
-        self.notebook.add(frame, text=f"Chat: {title}")
-        self.notebook.select(frame)
-        # Header with peer info
-        header = tk.Frame(frame)
-        header.grid(row=0, column=0, columnspan=3, sticky='ew', padx=8, pady=(8, 0))
-        header.columnconfigure(0, weight=1)
-        tk.Label(header, text=title, font=('TkDefaultFont', 10, 'bold')).pack(side='left')
-        tk.Label(header, text=friend.get('email') or '', fg='gray').pack(side='right')
+        tab = PrivateChatTab(self.notebook, friend, on_send=lambda f, text, _t: self._send_dm_raw(f, text), on_load_history=self._load_thread_for_friend)
+        self._dm_tabs[key] = tab
 
-        transcript = scrolledtext.ScrolledText(frame, wrap=tk.WORD, state=tk.DISABLED, width=60, height=18)
-        transcript.grid(row=1, column=0, columnspan=3, padx=8, pady=8, sticky='nsew')
-        entry = tk.Entry(frame, width=50)
-        entry.grid(row=2, column=0, padx=8, pady=(0,8), sticky='ew')
-        send_btn = tk.Button(frame, text='Gửi', command=lambda: self._send_dm(friend, entry, transcript))
-        send_btn.grid(row=2, column=1, padx=4, pady=(0,8))
-        entry.bind('<Return>', lambda _e: self._send_dm(friend, entry, transcript))
-        frame.rowconfigure(1, weight=1)
-        frame.columnconfigure(0, weight=1)
-        self._dm_tabs[key] = { 'frame': frame, 'transcript': transcript, 'entry': entry, 'friend': friend }
+    def _send_dm_raw(self, friend, text: str):
+        to_uid = friend.get('uid') or ''
+        client_msg_id = f"{self.master.winfo_id()}-{to_uid}-{len(text)}"
+        sent = self.network.send_command({ 'type': 'SEND_DM', 'toUid': to_uid, 'text': text, 'clientMsgId': client_msg_id })
+        if not sent:
+            self.log('Không thể gửi tin nhắn (network)')
+            return
 
-    def _send_dm(self, friend, entry_widget, transcript_widget):
-        text = (entry_widget.get() or '').strip()
-        if not text:
+    def _find_dm_tab_by_thread_or_uid(self, thread_id: str | None, from_uid: str | None):
+        if not hasattr(self, '_dm_tabs'):
+            self._dm_tabs = {}
+        if thread_id:
+            for key, tab in self._dm_tabs.items():
+                friend = getattr(tab, 'friend', None) or {}
+                if friend.get('threadId') == thread_id:
+                    return tab
+        if from_uid:
+            for key, tab in self._dm_tabs.items():
+                friend = getattr(tab, 'friend', None) or {}
+                if friend.get('uid') == from_uid:
+                    return tab
+        return None
+
+    
+        
+    def _load_thread_for_friend(self, friend):
+        peer_uid = friend.get('uid') or ''
+        if not peer_uid:
             return
         try:
-            transcript_widget.configure(state=tk.NORMAL)
-            transcript_widget.insert(tk.END, f"Me → {friend.get('displayName') or friend.get('email')}: {text}\n")
-            transcript_widget.configure(state=tk.DISABLED)
-            transcript_widget.see(tk.END)
+            self.network.send_command({ 'type': 'LOAD_THREAD', 'peerUid': peer_uid, 'limit': 50 })
         except Exception:
             pass
-        entry_widget.delete(0, tk.END)
+
 
     def accept_friend_request(self, requester_email=None):
         if requester_email is None:
@@ -375,74 +351,9 @@ class ChatWindow:
             messagebox.showerror('Lỗi mạng', 'Không thể gửi yêu cầu từ chối đến server.')
             return
 
-    def _handle_friend_request_sent(self, obj):
-        ok = bool(obj.get('ok'))
-        if ok:
-            messagebox.showinfo('Yêu cầu kết bạn', f'Đã gửi yêu cầu kết bạn đến {self._found_user_email}.')
-            self.btn_send_request.configure(state=tk.DISABLED)
-            self.result_card.grid_remove()
-        else:
-            err = obj.get('error') or 'Không gửi được yêu cầu.'
-            messagebox.showerror('Yêu cầu kết bạn', err)
-
-    def _handle_friend_request_accepted(self, obj):
-        ok = bool(obj.get('ok'))
-        if ok:
-            # Remove from UI list
-            self.tab_profile.remove_selected_request()
-            messagebox.showinfo('Kết bạn', 'Đã chấp nhận lời mời kết bạn.')
-            # Refresh friends list
-            try:
-                self.network.send_command({ 'type': 'LIST_FRIENDS' })
-            except Exception:
-                pass
-            # Refresh incoming requests as well
-            try:
-                self.network.send_command({ 'type': 'FRIEND_REQUESTS' })
-            except Exception:
-                pass
-            # Switch to Bạn bè tab to show the new friend
-            try:
-                self.notebook.select(self.tab_friends)
-            except Exception:
-                pass
-        else:
-            err = obj.get('error') or 'Không chấp nhận được lời mời.'
-            messagebox.showerror('Kết bạn', err)
-
-    def _handle_friend_request_rejected(self, obj):
-        ok = bool(obj.get('ok'))
-        if ok:
-            # Remove from UI list
-            self.tab_profile.remove_selected_request()
-            messagebox.showinfo('Kết bạn', 'Đã từ chối lời mời kết bạn.')
-            try:
-                self.network.send_command({ 'type': 'FRIEND_REQUESTS' })
-            except Exception:
-                pass
-        else:
-            err = obj.get('error') or 'Không từ chối được lời mời.'
-            messagebox.showerror('Kết bạn', err)
-
-    def _handle_friend_requests(self, obj):
-        requests = obj.get('requests') or []
-        # Save raw for later accept/reject payloads
-        self._incoming_requests = requests
-        # Populate listbox with email fallback to fromUid
-        emails = []
-        for r in requests:
-            email = r.get('fromEmail') or r.get('fromUid') or ''
-            if email:
-                emails.append(email)
-        self.tab_profile.set_friend_requests(emails)
-
-        # try:
-        #     self.log(f"[FriendRequests] Loaded {len(emails)} request(s)")
-        # except Exception:
-        #     pass
+    
 
     def set_friend_requests(self, requester_emails):
-        """Replace the list of incoming friend requests shown in Profile."""
         self.tab_profile.set_friend_requests(requester_emails)
 
     def on_close(self):

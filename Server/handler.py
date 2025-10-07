@@ -3,11 +3,11 @@ import socket
 
 try:
     from Chat.Server.firebase_admin_utils import verify_id_token
-    from Chat.Server.state import clients, clients_lock, socket_to_user, socket_to_uid
+    from Chat.Server.state import clients, clients_lock, socket_to_user, socket_to_uid, uid_to_socket
     from Chat.Server.commands import handle_command_line as commands_handle
 except Exception:
     from firebase_admin_utils import verify_id_token
-    from state import clients, clients_lock, socket_to_user, socket_to_uid
+    from state import clients, clients_lock, socket_to_user, socket_to_uid, uid_to_socket
     from commands import handle_command_line as commands_handle
 
 
@@ -73,6 +73,7 @@ def handle_client(conn: socket.socket, addr):
                 pass
             try:
                 socket_to_uid[conn] = uid
+                uid_to_socket[uid] = conn
             except Exception:
                 pass
         # Ensure user profile exists
@@ -175,6 +176,14 @@ def handle_client(conn: socket.socket, addr):
                 socket_to_user.pop(conn, None)
                 try:
                     socket_to_uid.pop(conn, None)
+                except Exception:
+                    pass
+                try:
+                    # Remove by value if matching
+                    for k, v in list(uid_to_socket.items()):
+                        if v is conn:
+                            uid_to_socket.pop(k, None)
+                    
                 except Exception:
                     pass
             left = f"[Server] {(name or str(addr))} left"

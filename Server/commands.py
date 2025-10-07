@@ -5,11 +5,13 @@ try:
     from Chat.Server.firebase_admin_utils import init_firebase_if_needed
     from Chat.Server.firebase_admin_utils import db
     from Chat.Server.state import socket_to_user
+    from Chat.Server.state import uid_to_socket
 except Exception:
     from firebase_admin_utils import get_user_by_email, list_friends, get_email_for_uid, ensure_user_profile
     from firebase_admin_utils import init_firebase_if_needed
     from firebase_admin_utils import db
     from state import socket_to_user
+    from state import uid_to_socket
 
 
 def handle_command_line(conn, obj: dict):
@@ -30,6 +32,10 @@ def handle_command_line(conn, obj: dict):
         _cmd_reject_request(conn, obj)
     elif cmd_type == 'FRIEND_REQUESTS':
         _cmd_friend_requests(conn)
+    elif cmd_type == 'SEND_DM':
+        _cmd_send_dm(conn, obj)
+    elif cmd_type == 'LOAD_THREAD':
+        _cmd_load_thread(conn, obj)
     else:
         _send_cmd(conn, { 'type': 'ERROR', 'message': 'unknown_command' })
 
@@ -92,6 +98,85 @@ def _resolve_uid_from_obj(obj: dict) -> str:
         record = get_user_by_email(to_email)
         return (record or {}).get('uid') or ''
     return ''
+
+
+def _make_thread_id(uid_a: str, uid_b: str) -> str:
+    if uid_a <= uid_b:
+        return f"{uid_a}__{uid_b}"
+    return f"{uid_b}__{uid_a}"
+
+
+def _cmd_send_dm(conn, obj: dict):
+    uid = getattr(conn, '_chat_uid', '')
+    if not uid:
+        # try fallback
+        try:
+            from Chat.Server.state import socket_to_uid as _s2u  # type: ignore
+        except Exception:
+            from state import socket_to_uid as _s2u  # type: ignore
+        uid = _s2u.get(conn, '') if _s2u else ''
+    to_uid = (obj.get('toUid') or '').strip()
+    text = (obj.get('text') or '').strip()
+    client_msg_id = (obj.get('clientMsgId') or '').strip()
+    if not uid or not to_uid or not text:
+        _send_cmd(conn, { 'type': 'DM_DELIVERED', 'ok': False, 'clientMsgId': client_msg_id, 'error': 'missing_params' })
+        return
+    try:
+        init_firebase_if_needed()
+        thread_id = _make_thread_id(uid, to_uid)
+        msg_ref = db.reference(f'/chats/{thread_id}/messages').push({
+            'senderUid': uid,
+            'text': text,
+            'ts': {'.sv': 'timestamp'},
+        })
+        # Deliver to recipient if online
+        try:
+            peer_socket = uid_to_socket.get(to_uid)
+            if peer_socket is not None:
+                _send_cmd(peer_socket, { 'type': 'DM', 'fromUid': uid, 'text': text, 'threadId': thread_id })
+        except Exception:
+            pass
+        _send_cmd(conn, { 'type': 'DM_DELIVERED', 'ok': True, 'clientMsgId': client_msg_id, 'threadId': thread_id })
+    except Exception as e:
+        _send_cmd(conn, { 'type': 'DM_DELIVERED', 'ok': False, 'clientMsgId': client_msg_id, 'error': f'{e}' })
+
+
+def _cmd_load_thread(conn, obj: dict):
+    uid = getattr(conn, '_chat_uid', '')
+    if not uid:
+        try:
+            from Chat.Server.state import socket_to_uid as _s2u  # type: ignore
+        except Exception:
+            from state import socket_to_uid as _s2u  # type: ignore
+        uid = _s2u.get(conn, '') if _s2u else ''
+    peer_uid = (obj.get('peerUid') or '').strip()
+    limit = obj.get('limit')
+    if not uid or not peer_uid:
+        _send_cmd(conn, { 'type': 'DM_HISTORY', 'ok': False, 'error': 'missing_params' })
+        return
+    try:
+        init_firebase_if_needed()
+        thread_id = _make_thread_id(uid, peer_uid)
+        ref = db.reference(f'/chats/{thread_id}/messages')
+        data = ref.get() or {}
+        messages = []
+        if isinstance(data, dict):
+            for mid, m in data.items():
+                if not isinstance(m, dict):
+                    continue
+                messages.append({
+                    'id': mid,
+                    'senderUid': m.get('senderUid') or '',
+                    'text': m.get('text') or '',
+                    'ts': m.get('ts') or 0,
+                })
+        # Sort by ts asc
+        messages.sort(key=lambda x: x.get('ts') or 0)
+        if isinstance(limit, int) and limit > 0:
+            messages = messages[-limit:]
+        _send_cmd(conn, { 'type': 'DM_HISTORY', 'ok': True, 'threadId': thread_id, 'peerUid': peer_uid, 'meUid': uid, 'messages': messages })
+    except Exception as e:
+        _send_cmd(conn, { 'type': 'DM_HISTORY', 'ok': False, 'error': f'{e}' })
 
 
 def _cmd_send_friend_request(conn, obj: dict):
