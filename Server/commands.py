@@ -36,6 +36,14 @@ def handle_command_line(conn, obj: dict):
         _cmd_send_dm(conn, obj)
     elif cmd_type == 'LOAD_THREAD':
         _cmd_load_thread(conn, obj)
+    elif cmd_type == 'CREATE_GROUP':
+        _cmd_create_group(conn, obj)
+    elif cmd_type == 'LIST_GROUPS':
+        _cmd_list_groups(conn)
+    elif cmd_type == 'SEND_GROUP_MESSAGE':
+        _cmd_send_group_message(conn, obj)
+    elif cmd_type == 'LOAD_GROUP_HISTORY':
+        _cmd_load_group_history(conn, obj)
     else:
         _send_cmd(conn, { 'type': 'ERROR', 'message': 'unknown_command' })
 
@@ -57,7 +65,7 @@ def _cmd_find_user(conn, obj: dict):
         'uid': record.get('uid') or ''
     })
 
-
+# Send command to client
 def _send_cmd(conn, obj: dict):
     try:
         conn.sendall(("CMD " + json.dumps(obj) + "\n").encode('utf-8'))
@@ -111,9 +119,9 @@ def _cmd_send_dm(conn, obj: dict):
     if not uid:
         # try fallback
         try:
-            from Chat.Server.state import socket_to_uid as _s2u  # type: ignore
+            from Chat.Server.state import socket_to_uid as _s2u  
         except Exception:
-            from state import socket_to_uid as _s2u  # type: ignore
+            from state import socket_to_uid as _s2u  
         uid = _s2u.get(conn, '') if _s2u else ''
     to_uid = (obj.get('toUid') or '').strip()
     text = (obj.get('text') or '').strip()
@@ -124,12 +132,13 @@ def _cmd_send_dm(conn, obj: dict):
     try:
         init_firebase_if_needed()
         thread_id = _make_thread_id(uid, to_uid)
+        # Write message to database
         msg_ref = db.reference(f'/chats/{thread_id}/messages').push({
             'senderUid': uid,
             'text': text,
             'ts': {'.sv': 'timestamp'},
         })
-        # Deliver to recipient if online
+        # Deliver to recipient if user online
         try:
             peer_socket = uid_to_socket.get(to_uid)
             if peer_socket is not None:
@@ -357,5 +366,306 @@ def _cmd_friend_requests(conn):
         _send_cmd(conn, { 'type': 'FRIEND_REQUESTS', 'requests': requests })
     except Exception as e:
         _send_cmd(conn, { 'type': 'FRIEND_REQUESTS', 'requests': [], 'error': f'{e}' })
+
+
+# Group chat commands
+def _cmd_create_group(conn, obj: dict):
+    uid = getattr(conn, '_chat_uid', '')
+    if not uid:
+        try:
+            from Chat.Server.state import socket_to_uid as _s2u
+        except Exception:
+            from state import socket_to_uid as _s2u
+        uid = _s2u.get(conn, '') if _s2u else ''
+    
+    if not uid:
+        _send_cmd(conn, { 'type': 'GROUP_CREATED', 'ok': False, 'error': 'unauthorized' })
+        return
+    
+    group_name = (obj.get('name') or '').strip()
+    member_uids = obj.get('memberUids') or []
+    
+    if not group_name or not member_uids:
+        _send_cmd(conn, { 'type': 'GROUP_CREATED', 'ok': False, 'error': 'missing_params' })
+        return
+    
+    try:
+        init_firebase_if_needed()
+        
+        # Create group ID
+        import uuid
+        group_id = str(uuid.uuid4())
+        
+        # Get member details
+        members = []
+        for member_uid in member_uids:
+            try:
+                member_email = get_email_for_uid(member_uid) or ''
+                member_name = ''
+                # Try to get display name from user profile
+                try:
+                    user_ref = db.reference(f'/users/{member_uid}')
+                    user_data = user_ref.get()
+                    if isinstance(user_data, dict):
+                        member_name = user_data.get('displayName', '')
+                except Exception:
+                    pass
+                
+                members.append({
+                    'uid': member_uid,
+                    'email': member_email,
+                    'displayName': member_name or member_email.split('@')[0] if member_email else 'Unknown'
+                })
+            except Exception:
+                members.append({
+                    'uid': member_uid,
+                    'email': '',
+                    'displayName': 'Unknown'
+                })
+        
+        # Add creator to members
+        creator_email = get_email_for_uid(uid) or ''
+        creator_name = ''
+        try:
+            user_ref = db.reference(f'/users/{uid}')
+            user_data = user_ref.get()
+            if isinstance(user_data, dict):
+                creator_name = user_data.get('displayName', '')
+        except Exception:
+            pass
+        
+        members.append({
+            'uid': uid,
+            'email': creator_email,
+            'displayName': creator_name or creator_email.split('@')[0] if creator_email else 'Unknown'
+        })
+        
+        # Create group in database
+        group_data = {
+            'id': group_id,
+            'name': group_name,
+            'createdBy': uid,
+            'createdAt': {'.sv': 'timestamp'},
+            'members': {member['uid']: True for member in members}
+        }
+        
+        # Store group data
+        db.reference(f'/groups/{group_id}').set(group_data)
+        
+        # Add group to each member's groups list
+        for member in members:
+            db.reference(f'/users/{member["uid"]}/groups/{group_id}').set(True)
+        
+        # Send success response
+        _send_cmd(conn, {
+            'type': 'GROUP_CREATED',
+            'ok': True,
+            'groupId': group_id,
+            'name': group_name,
+            'members': members
+        })
+        
+        try:
+            print(f"[GROUP] Created group {group_name} (id={group_id}) with {len(members)} members")
+        except Exception:
+            pass
+            
+    except Exception as e:
+        _send_cmd(conn, { 'type': 'GROUP_CREATED', 'ok': False, 'error': f'{e}' })
+
+
+def _cmd_list_groups(conn):
+    uid = getattr(conn, '_chat_uid', '')
+    if not uid:
+        try:
+            from Chat.Server.state import socket_to_uid as _s2u
+        except Exception:
+            from state import socket_to_uid as _s2u
+        uid = _s2u.get(conn, '') if _s2u else ''
+    
+    if not uid:
+        _send_cmd(conn, { 'type': 'GROUPS', 'groups': [], 'error': 'unauthorized' })
+        return
+    
+    try:
+        init_firebase_if_needed()
+        
+        # Get user's groups
+        user_groups_ref = db.reference(f'/users/{uid}/groups')
+        user_groups = user_groups_ref.get() or {}
+        
+        groups = []
+        for group_id in user_groups.keys():
+            try:
+                # Get group data
+                group_ref = db.reference(f'/groups/{group_id}')
+                group_data = group_ref.get()
+                
+                if not isinstance(group_data, dict):
+                    continue
+                
+                # Get member details
+                members = []
+                group_members = group_data.get('members', {})
+                for member_uid in group_members.keys():
+                    try:
+                        member_email = get_email_for_uid(member_uid) or ''
+                        member_name = ''
+                        try:
+                            user_ref = db.reference(f'/users/{member_uid}')
+                            user_data = user_ref.get()
+                            if isinstance(user_data, dict):
+                                member_name = user_data.get('displayName', '')
+                        except Exception:
+                            pass
+                        
+                        members.append({
+                            'uid': member_uid,
+                            'email': member_email,
+                            'displayName': member_name or member_email.split('@')[0] if member_email else 'Unknown'
+                        })
+                    except Exception:
+                        members.append({
+                            'uid': member_uid,
+                            'email': '',
+                            'displayName': 'Unknown'
+                        })
+                
+                groups.append({
+                    'id': group_id,
+                    'name': group_data.get('name', 'Unknown Group'),
+                    'createdBy': group_data.get('createdBy', ''),
+                    'createdAt': group_data.get('createdAt', 0),
+                    'members': members
+                })
+                
+            except Exception:
+                continue
+        
+        _send_cmd(conn, { 'type': 'GROUPS', 'groups': groups })
+        
+        try:
+            print(f"[GROUP] LIST_GROUPS for uid={uid}: {len(groups)} groups")
+        except Exception:
+            pass
+            
+    except Exception as e:
+        _send_cmd(conn, { 'type': 'GROUPS', 'groups': [], 'error': f'{e}' })
+
+
+def _cmd_send_group_message(conn, obj: dict):
+    uid = getattr(conn, '_chat_uid', '')
+    if not uid:
+        try:
+            from Chat.Server.state import socket_to_uid as _s2u
+        except Exception:
+            from state import socket_to_uid as _s2u
+        uid = _s2u.get(conn, '') if _s2u else ''
+    
+    group_id = (obj.get('groupId') or '').strip()
+    text = (obj.get('text') or '').strip()
+    
+    if not uid or not group_id or not text:
+        _send_cmd(conn, { 'type': 'GROUP_MESSAGE_DELIVERED', 'ok': False, 'error': 'missing_params' })
+        return
+    
+    try:
+        init_firebase_if_needed()
+        
+        # Check if user is member of group
+        user_in_group = bool(db.reference(f'/users/{uid}/groups/{group_id}').get())
+        if not user_in_group:
+            _send_cmd(conn, { 'type': 'GROUP_MESSAGE_DELIVERED', 'ok': False, 'error': 'not_member' })
+            return
+        
+        # Store message in database
+        msg_ref = db.reference(f'/groups/{group_id}/messages').push({
+            'senderUid': uid,
+            'text': text,
+            'ts': {'.sv': 'timestamp'},
+        })
+        
+        # Get group members and deliver to online members
+        group_data = db.reference(f'/groups/{group_id}').get() or {}
+        group_members = group_data.get('members', {})
+        
+        for member_uid in group_members.keys():
+            if member_uid == uid:  # Skip sender
+                continue
+            try:
+                member_socket = uid_to_socket.get(member_uid)
+                if member_socket is not None:
+                    _send_cmd(member_socket, {
+                        'type': 'GROUP_MESSAGE',
+                        'groupId': group_id,
+                        'senderUid': uid,
+                        'text': text
+                    })
+            except Exception:
+                pass
+        
+        _send_cmd(conn, { 'type': 'GROUP_MESSAGE_DELIVERED', 'ok': True, 'groupId': group_id })
+        
+    except Exception as e:
+        _send_cmd(conn, { 'type': 'GROUP_MESSAGE_DELIVERED', 'ok': False, 'error': f'{e}' })
+
+
+def _cmd_load_group_history(conn, obj: dict):
+    uid = getattr(conn, '_chat_uid', '')
+    if not uid:
+        try:
+            from Chat.Server.state import socket_to_uid as _s2u
+        except Exception:
+            from state import socket_to_uid as _s2u
+        uid = _s2u.get(conn, '') if _s2u else ''
+    
+    group_id = (obj.get('groupId') or '').strip()
+    limit = obj.get('limit', 50)
+    
+    if not uid or not group_id:
+        _send_cmd(conn, { 'type': 'GROUP_HISTORY', 'ok': False, 'error': 'missing_params' })
+        return
+    
+    try:
+        init_firebase_if_needed()
+        
+        # Check if user is member of group
+        user_in_group = bool(db.reference(f'/users/{uid}/groups/{group_id}').get())
+        if not user_in_group:
+            _send_cmd(conn, { 'type': 'GROUP_HISTORY', 'ok': False, 'error': 'not_member' })
+            return
+        
+        # Get group messages
+        messages_ref = db.reference(f'/groups/{group_id}/messages')
+        data = messages_ref.get() or {}
+        messages = []
+        
+        if isinstance(data, dict):
+            for mid, m in data.items():
+                if not isinstance(m, dict):
+                    continue
+                messages.append({
+                    'id': mid,
+                    'senderUid': m.get('senderUid') or '',
+                    'text': m.get('text') or '',
+                    'ts': m.get('ts') or 0,
+                })
+        
+        # Sort by timestamp ascending
+        messages.sort(key=lambda x: x.get('ts') or 0)
+        
+        # Apply limit
+        if isinstance(limit, int) and limit > 0:
+            messages = messages[-limit:]
+        
+        _send_cmd(conn, {
+            'type': 'GROUP_HISTORY',
+            'ok': True,
+            'groupId': group_id,
+            'messages': messages
+        })
+        
+    except Exception as e:
+        _send_cmd(conn, { 'type': 'GROUP_HISTORY', 'ok': False, 'error': f'{e}' })
 
 

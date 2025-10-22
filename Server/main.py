@@ -10,7 +10,7 @@ except Exception:
 
 # Server Configuration
 def run_server(host: str = '0.0.0.0', port: int = 8080):
-    host_Server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    host_Server = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # Dòng lệnh TCP
     host_Server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     host_Server.bind((host, port))
     host_Server.listen(5)
@@ -19,7 +19,7 @@ def run_server(host: str = '0.0.0.0', port: int = 8080):
 
     try:
         while True:
-            conn, addr = host_Server.accept()
+            conn, addr = host_Server.accept() # Accept a connection from a client / Hướng kết nối từ client
             print(f"Connection from {addr} has been established!")
             threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
     except KeyboardInterrupt:

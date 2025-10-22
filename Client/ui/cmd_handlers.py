@@ -170,3 +170,55 @@ def handle_dm_history(win, obj):
         pass
 
 
+# Group chat handlers
+def handle_groups(win, obj):
+    """Handle groups list response"""
+    groups = obj.get('groups') or []
+    win.set_groups(groups)
+
+
+def handle_group_created(win, obj):
+    """Handle group creation response"""
+    ok = bool(obj.get('ok'))
+    if ok:
+        group_id = obj.get('groupId', '')
+        group_name = obj.get('name', '')
+        messagebox.showinfo('Tạo nhóm', f'Nhóm "{group_name}" đã được tạo thành công!')
+        # Refresh groups list
+        try:
+            win.network.send_command({ 'type': 'LIST_GROUPS' })
+        except Exception:
+            pass
+    else:
+        error = obj.get('error') or 'Không thể tạo nhóm'
+        messagebox.showerror('Tạo nhóm', error)
+
+
+def handle_group_message(win, obj):
+    """Handle incoming group message"""
+    group_id = obj.get('groupId', '')
+    sender_uid = obj.get('senderUid', '')
+    text = obj.get('text', '')
+    
+    if not group_id or not text:
+        return
+    
+    # Add message to group chat tab
+    win.add_group_message(group_id, sender_uid, text, sender_uid)
+
+
+def handle_group_history(win, obj):
+    """Handle group chat history response"""
+    if not bool(obj.get('ok')):
+        return
+    
+    group_id = obj.get('groupId', '')
+    messages = obj.get('messages') or []
+    
+    if not group_id:
+        return
+    
+    # Load messages into group chat tab
+    win.load_group_messages(group_id, messages)
+
+

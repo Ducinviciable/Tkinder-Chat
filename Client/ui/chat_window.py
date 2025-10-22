@@ -6,6 +6,8 @@ from Chat.Client.ui.user_profile import UserProfileFrame
 from Chat.Client.ui.find_friend import FindFriendFrame
 from Chat.Client.ui.friends_tab import FriendsTabFrame
 from Chat.Client.ui.private_chat import PrivateChatTab
+from Chat.Client.ui.create_group import CreateGroupFrame
+from Chat.Client.ui.group_chat import GroupsListFrame, GroupChatTab
 from Chat.Client.ui import cmd_handlers as CMD
 
 
@@ -108,6 +110,18 @@ class ChatWindow:
         self.tab_friends = FriendsTabFrame(self.notebook, on_open_dm=self._open_dm_from_friend, on_refresh=lambda: self.network.send_command({ 'type': 'LIST_FRIENDS' }))
         self.notebook.add(self.tab_friends, text='Bạn bè')
         
+        # --- Create Group tab ---
+        self.tab_create_group = CreateGroupFrame(self.notebook, on_create_group=self._create_group, on_refresh_friends=lambda: self.network.send_command({ 'type': 'LIST_FRIENDS' }))
+        self.notebook.add(self.tab_create_group, text='Tạo nhóm')
+        
+        # --- Groups tab ---
+        self.tab_groups = GroupsListFrame(self.notebook, on_open_group=self._open_group_chat, on_create_group=self._show_create_group_tab)
+        self.notebook.add(self.tab_groups, text='Nhóm chat')
+        
+        # Group chat tabs storage
+        self._group_tabs = {}
+        self._groups = []
+        
     def _connect_to_server(self, id_token: str):
         """Connect to server with authentication."""
         success, err = self.network.connect(id_token)
@@ -155,6 +169,18 @@ class ChatWindow:
             if msg_type == 'DM_HISTORY':
                 CMD.handle_dm_history(self, obj)
                 return
+            if msg_type == 'GROUPS':
+                CMD.handle_groups(self, obj)
+                return
+            if msg_type == 'GROUP_CREATED':
+                CMD.handle_group_created(self, obj)
+                return
+            if msg_type == 'GROUP_MESSAGE':
+                CMD.handle_group_message(self, obj)
+                return
+            if msg_type == 'GROUP_HISTORY':
+                CMD.handle_group_history(self, obj)
+                return
             self.master.after(0, self.log, message)
             return
         self.master.after(0, self.log, message)
@@ -166,6 +192,11 @@ class ChatWindow:
         if current == str(self.tab_friends):
             try:
                 self.network.send_command({ 'type': 'LIST_FRIENDS' })
+            except Exception:
+                pass
+        if current == str(self.tab_groups):
+            try:
+                self.network.send_command({ 'type': 'LIST_GROUPS' })
             except Exception:
                 pass
 
@@ -355,6 +386,117 @@ class ChatWindow:
 
     def set_friend_requests(self, requester_emails):
         self.tab_profile.set_friend_requests(requester_emails)
+
+    # -------------------- Group chat features --------------------
+    def _create_group(self, group_name: str, selected_friends: list):
+        """Create a new group"""
+        if not group_name or not selected_friends:
+            messagebox.showwarning('Thiếu thông tin', 'Vui lòng nhập tên nhóm và chọn bạn bè.')
+            return
+        
+        # Prepare member UIDs
+        member_uids = [friend.get('uid', '') for friend in selected_friends if friend.get('uid')]
+        
+        if not member_uids:
+            messagebox.showwarning('Lỗi', 'Không có thành viên hợp lệ được chọn.')
+            return
+        
+        # Send create group command
+        sent = self.network.send_command({
+            'type': 'CREATE_GROUP',
+            'name': group_name,
+            'memberUids': member_uids
+        })
+        
+        if not sent:
+            messagebox.showerror('Lỗi mạng', 'Không thể gửi yêu cầu tạo nhóm đến server.')
+            return
+        
+        messagebox.showinfo('Thành công', f'Nhóm "{group_name}" đã được tạo thành công!')
+        
+        # Switch to groups tab and refresh
+        self.notebook.select(self.tab_groups)
+        try:
+            self.network.send_command({ 'type': 'LIST_GROUPS' })
+        except Exception:
+            pass
+
+    def _show_create_group_tab(self):
+        """Switch to create group tab"""
+        self.notebook.select(self.tab_create_group)
+
+    def _open_group_chat(self, group_data):
+        """Open a group chat"""
+        group_id = group_data.get('id', '')
+        if not group_id:
+            return
+        
+        # Check if group chat tab already exists
+        if group_id in self._group_tabs:
+            try:
+                self._group_tabs[group_id].focus()
+            except Exception:
+                pass
+            return
+        
+        # Create new group chat tab
+        tab = GroupChatTab(
+            self.notebook,
+            group_data,
+            on_send_message=lambda gid, text: self._send_group_message(gid, text),
+            on_load_history=lambda gid: self._load_group_history(gid)
+        )
+        
+        # Add tab to notebook
+        tab_name = f"Nhóm: {group_data.get('name', 'Unknown')}"
+        self.notebook.add(tab, text=tab_name)
+        self._group_tabs[group_id] = tab
+        
+        # Switch to the new tab
+        self.notebook.select(tab)
+
+    def _send_group_message(self, group_id: str, text: str):
+        """Send a message to a group"""
+        if not group_id or not text:
+            return
+        
+        sent = self.network.send_command({
+            'type': 'SEND_GROUP_MESSAGE',
+            'groupId': group_id,
+            'text': text
+        })
+        
+        if not sent:
+            self.log('Không thể gửi tin nhắn nhóm (network)')
+
+    def _load_group_history(self, group_id: str):
+        """Load group chat history"""
+        if not group_id:
+            return
+        
+        try:
+            self.network.send_command({
+                'type': 'LOAD_GROUP_HISTORY',
+                'groupId': group_id,
+                'limit': 50
+            })
+        except Exception:
+            pass
+
+    def set_groups(self, groups):
+        """Set the list of groups"""
+        self._groups = groups or []
+        self.tab_groups.set_groups(groups)
+
+    def add_group_message(self, group_id: str, sender: str, message: str, sender_uid: str = None):
+        """Add a received group message to the appropriate tab"""
+        if group_id in self._group_tabs:
+            self._group_tabs[group_id].add_message(sender, message, sender_uid)
+
+    def load_group_messages(self, group_id: str, messages: list):
+        """Load group messages into the appropriate tab"""
+        if group_id in self._group_tabs:
+            self._group_tabs[group_id].load_messages(messages)
 
     def on_close(self):
         try:
