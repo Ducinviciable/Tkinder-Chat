@@ -199,6 +199,11 @@ class ChatWindow:
                 self.network.send_command({ 'type': 'LIST_GROUPS' })
             except Exception:
                 pass
+        if current == str(self.tab_create_group):
+            try:
+                self.network.send_command({ 'type': 'LIST_FRIENDS' })
+            except Exception:
+                pass
 
     def _refresh_requests(self):
         try:
@@ -386,6 +391,14 @@ class ChatWindow:
 
     def set_friend_requests(self, requester_emails):
         self.tab_profile.set_friend_requests(requester_emails)
+    
+    def set_friends_for_create_group(self, friends):
+        """Set friends list for create group tab"""
+        try:
+            if hasattr(self, 'tab_create_group'):
+                self.tab_create_group.set_friends(friends)
+        except Exception:
+            pass
 
     # -------------------- Group chat features --------------------
     def _create_group(self, group_name: str, selected_friends: list):

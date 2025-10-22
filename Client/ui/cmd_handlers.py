@@ -46,6 +46,11 @@ def handle_friends(win, obj):
         win.tab_friends.set_friends(friends)
     except Exception:
         pass
+    # Also update create group tab
+    try:
+        win.set_friends_for_create_group(friends)
+    except Exception:
+        pass
 
 
 def handle_friend_requests(win, obj):

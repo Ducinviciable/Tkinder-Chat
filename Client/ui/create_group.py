@@ -77,18 +77,28 @@ class CreateGroupFrame(tk.Frame):
         for widget in self.friends_inner_frame.winfo_children():
             widget.destroy()
         
-        # Create checkboxes for each friend
-        for i, friend in enumerate(self._friends):
-            var = tk.BooleanVar()
-            self._friend_vars[friend.get('uid', '')] = var
-            
-            cb = tk.Checkbutton(
+        if not self._friends:
+            # Show message when no friends
+            no_friends_label = tk.Label(
                 self.friends_inner_frame,
-                text=friend.get('displayName') or friend.get('email') or 'Unknown',
-                variable=var,
-                command=lambda uid=friend.get('uid', ''): self._on_friend_select(uid)
+                text="Chưa có bạn bè nào. Hãy kết bạn trước khi tạo nhóm.",
+                fg="gray",
+                font=('Arial', 10, 'italic')
             )
-            cb.grid(row=i, column=0, sticky='w', padx=4, pady=2)
+            no_friends_label.grid(row=0, column=0, sticky='w', padx=4, pady=8)
+        else:
+            # Create checkboxes for each friend
+            for i, friend in enumerate(self._friends):
+                var = tk.BooleanVar()
+                self._friend_vars[friend.get('uid', '')] = var
+                
+                cb = tk.Checkbutton(
+                    self.friends_inner_frame,
+                    text=friend.get('displayName') or friend.get('email') or 'Unknown',
+                    variable=var,
+                    command=lambda uid=friend.get('uid', ''): self._on_friend_select(uid)
+                )
+                cb.grid(row=i, column=0, sticky='w', padx=4, pady=2)
         
         # Update canvas scroll region
         self.friends_inner_frame.update_idletasks()
