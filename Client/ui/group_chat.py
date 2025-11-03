@@ -4,11 +4,14 @@ from tkinter import ttk
 
 
 class GroupChatTab(tk.Frame):
-    def __init__(self, master, group_data, on_send_message, on_load_history):
+    def __init__(self, master, group_data, on_send_message, on_load_history, on_leave_group=None, on_refresh_members=None, on_close=None):
         super().__init__(master)
         self.group_data = group_data
         self.on_send_message = on_send_message
         self.on_load_history = on_load_history
+        self.on_leave_group = on_leave_group
+        self.on_refresh_members = on_refresh_members
+        self.on_close = on_close
         
         # Group info
         group_name = group_data.get('name', 'Unknown Group')
@@ -25,12 +28,24 @@ class GroupChatTab(tk.Frame):
         members_text = ', '.join([m.get('displayName', m.get('email', 'Unknown')) for m in members])
         tk.Label(header_frame, text=f'Thành viên: {members_text}', font=('Arial', 9)).pack(side='left', padx=(20, 0))
         
-        # Chat display
+        # Close button for tab/window
+        tk.Button(header_frame, text='Đóng', command=self._on_close).pack(side='right')
+        
+        # Left: chat display
         self.chat_display = scrolledtext.ScrolledText(
             self, wrap=tk.WORD, state=tk.DISABLED,
             width=60, height=20, font=('Arial', 10)
         )
-        self.chat_display.grid(row=1, column=0, columnspan=3, padx=8, pady=8, sticky='nsew')
+        self.chat_display.grid(row=1, column=0, columnspan=2, padx=8, pady=8, sticky='nsew')
+
+        # Right: members panel + Leave button
+        right_panel = tk.Frame(self)
+        right_panel.grid(row=1, column=2, padx=(0,8), pady=8, sticky='ns')
+        tk.Label(right_panel, text='Thành viên', font=('Arial', 10, 'bold')).pack(anchor='w')
+        self.members_list = tk.Listbox(right_panel, height=12)
+        self.members_list.pack(fill='both', expand=True, pady=(4,6))
+        self.btn_leave = tk.Button(right_panel, text='Rời nhóm', command=self._leave_group)
+        self.btn_leave.pack(fill='x')
         
         # Message input
         self.message_entry = tk.Entry(self, width=50, font=('Arial', 10))
@@ -41,9 +56,18 @@ class GroupChatTab(tk.Frame):
         self.send_button = tk.Button(self, text='Gửi', command=self._send_message)
         self.send_button.grid(row=2, column=1, padx=4, pady=8)
         
-        # Load history button
+        # Load history button (separate cell so it doesn't overlap the send button)
         self.history_button = tk.Button(self, text='Tải lịch sử', command=self._load_history)
         self.history_button.grid(row=2, column=2, padx=8, pady=8)
+
+        # Fill members list
+        try:
+            members = group_data.get('members', []) or []
+            for m in members:
+                name = m.get('displayName') or m.get('email') or m.get('uid') or 'Unknown'
+                self.members_list.insert(tk.END, name)
+        except Exception:
+            pass
         
         # Configure grid weights
         self.rowconfigure(1, weight=1)
@@ -51,6 +75,47 @@ class GroupChatTab(tk.Frame):
         
         # Load initial history
         self._load_history()
+        # Ask for fresh members list if callback is provided
+        if callable(self.on_refresh_members):
+            try:
+                self.on_refresh_members(self.group_data.get('id', ''))
+            except Exception:
+                pass
+
+    def _leave_group(self):
+        gid = self.group_data.get('id', '')
+        if not gid:
+            return
+        if callable(self.on_leave_group):
+            try:
+                self.on_leave_group(gid)
+            except Exception:
+                pass
+    
+    def _on_close(self):
+        if callable(self.on_close):
+            try:
+                self.on_close(self.group_data.get('id', ''))
+            except Exception:
+                pass
+
+    # --- Public UI helpers ---
+    def disable_sending(self):
+        try:
+            self.send_button.configure(state=tk.DISABLED)
+            self.message_entry.configure(state=tk.DISABLED)
+        except Exception:
+            pass
+
+    def set_members(self, members: list[dict]):
+        try:
+            self.members_list.delete(0, tk.END)
+            self.group_data['members'] = members or []
+            for m in (members or []):
+                name = m.get('displayName') or m.get('email') or m.get('uid') or 'Unknown'
+                self.members_list.insert(tk.END, name)
+        except Exception:
+            pass
 
     def _send_message(self):
         """Send a message to the group"""
@@ -114,10 +179,11 @@ class GroupChatTab(tk.Frame):
             sender_uid = msg.get('senderUid', '')
             text = msg.get('text', '')
             timestamp = msg.get('ts', 0)
+            is_system = bool(msg.get('system'))
             
-            # Get sender name
-            sender_name = sender_uid
-            if self.group_data.get('members'):
+            # Get sender name (or 'Hệ thống')
+            sender_name = 'Hệ thống' if is_system else sender_uid
+            if not is_system and self.group_data.get('members'):
                 for member in self.group_data.get('members', []):
                     if member.get('uid') == sender_uid:
                         sender_name = member.get('displayName', member.get('email', sender_uid))

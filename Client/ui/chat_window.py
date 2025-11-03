@@ -120,6 +120,7 @@ class ChatWindow:
         
         # Group chat tabs storage
         self._group_tabs = {}
+        self._group_windows = {}
         self._groups = []
         
     def _connect_to_server(self, id_token: str):
@@ -180,6 +181,15 @@ class ChatWindow:
                 return
             if msg_type == 'GROUP_HISTORY':
                 CMD.handle_group_history(self, obj)
+                return
+            if msg_type == 'LEAVE_GROUP_OK':
+                CMD.handle_leave_group_ok(self, obj)
+                return
+            if msg_type == 'GROUP_MEMBERS':
+                CMD.handle_group_members(self, obj)
+                return
+            if msg_type == 'GROUP_SYSTEM':
+                CMD.handle_group_system(self, obj)
                 return
             self.master.after(0, self.log, message)
             return
@@ -452,21 +462,31 @@ class ChatWindow:
                 pass
             return
         
-        # Create new group chat tab
+        # Open in a separate window (like Facebook)
+        import tkinter as tk
+        win = tk.Toplevel(self.master)
+        win.title(f"Nhóm: {group_data.get('name', 'Group')}")
+        win.minsize(640, 400)
+
+        def _on_window_close():
+            self.close_group_window(group_id)
+        try:
+            win.protocol("WM_DELETE_WINDOW", _on_window_close)
+        except Exception:
+            pass
+
         tab = GroupChatTab(
-            self.notebook,
+            win,
             group_data,
             on_send_message=lambda gid, text: self._send_group_message(gid, text),
-            on_load_history=lambda gid: self._load_group_history(gid)
+            on_load_history=lambda gid: self._load_group_history(gid),
+            on_leave_group=lambda gid: self._leave_group(gid),
+            on_refresh_members=lambda gid: self._refresh_group_members(gid),
+            on_close=lambda gid: self.close_group_window(gid)
         )
-        
-        # Add tab to notebook
-        tab_name = f"Nhóm: {group_data.get('name', 'Unknown')}"
-        self.notebook.add(tab, text=tab_name)
+        tab.pack(fill='both', expand=True)
         self._group_tabs[group_id] = tab
-        
-        # Switch to the new tab
-        self.notebook.select(tab)
+        self._group_windows[group_id] = win
 
     def _send_group_message(self, group_id: str, text: str):
         """Send a message to a group"""
@@ -495,6 +515,58 @@ class ChatWindow:
             })
         except Exception:
             pass
+
+    def _refresh_group_members(self, group_id: str):
+        if not group_id:
+            return
+        try:
+            self.network.send_command({ 'type': 'LIST_GROUP_MEMBERS', 'groupId': group_id })
+        except Exception:
+            pass
+
+    def _leave_group(self, group_id: str):
+        """Leave a group; server will stop delivering messages."""
+        if not group_id:
+            return
+        try:
+            self.network.send_command({ 'type': 'LEAVE_GROUP', 'groupId': group_id })
+        except Exception:
+            pass
+
+    def close_group_tab(self, group_id: str):
+        """Close and remove a group chat tab by id."""
+        if not group_id or group_id not in self._group_tabs:
+            return
+        tab = self._group_tabs.pop(group_id, None)
+        if tab is not None:
+            try:
+                tab.destroy()
+            except Exception:
+                pass
+
+    def close_group_window(self, group_id: str):
+        """Destroy the floating group window and cleanup references."""
+        try:
+            win = self._group_windows.pop(group_id, None)
+            if win is not None:
+                win.destroy()
+        except Exception:
+            pass
+        self.close_group_tab(group_id)
+
+    def disable_group_sending(self, group_id: str):
+        if group_id in self._group_tabs:
+            try:
+                self._group_tabs[group_id].disable_sending()
+            except Exception:
+                pass
+
+    def update_group_members(self, group_id: str, members: list):
+        if group_id in self._group_tabs:
+            try:
+                self._group_tabs[group_id].set_members(members)
+            except Exception:
+                pass
 
     def set_groups(self, groups):
         """Set the list of groups"""

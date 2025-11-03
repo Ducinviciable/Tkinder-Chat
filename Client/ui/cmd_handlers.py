@@ -227,3 +227,47 @@ def handle_group_history(win, obj):
     win.load_group_messages(group_id, messages)
 
 
+def handle_leave_group_ok(win, obj):
+    """Handle leave group confirmation and close the tab."""
+    ok = bool(obj.get('ok'))
+    group_id = obj.get('groupId', '')
+    if not group_id:
+        return
+    if ok:
+        try:
+            # Disable sending but keep the tab so user can still view history
+            win.disable_group_sending(group_id)
+            # Refresh members list so the user disappears from members
+            win.network.send_command({ 'type': 'LIST_GROUP_MEMBERS', 'groupId': group_id })
+            # Also refresh overall groups list
+            win.network.send_command({ 'type': 'LIST_GROUPS' })
+        except Exception:
+            pass
+    else:
+        from tkinter import messagebox
+        messagebox.showerror('Rời nhóm', obj.get('error') or 'Không thể rời nhóm')
+
+
+def handle_group_members(win, obj):
+    """Handle list of group members and push to UI."""
+    if not bool(obj.get('ok')):
+        return
+    group_id = obj.get('groupId', '')
+    members = obj.get('members') or []
+    if not group_id:
+        return
+    win.update_group_members(group_id, members)
+
+
+def handle_group_system(win, obj):
+    """Handle system notifications for a group (e.g., member_left)."""
+    group_id = obj.get('groupId', '')
+    text = obj.get('text') or ''
+    if not group_id or not text:
+        return
+    # Render as a system line in the chat
+    try:
+        win.add_group_message(group_id, 'Hệ thống', text, None)
+    except Exception:
+        pass
+

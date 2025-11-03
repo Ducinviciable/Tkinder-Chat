@@ -44,6 +44,10 @@ def handle_command_line(conn, obj: dict):
         _cmd_send_group_message(conn, obj)
     elif cmd_type == 'LOAD_GROUP_HISTORY':
         _cmd_load_group_history(conn, obj)
+    elif cmd_type == 'LEAVE_GROUP':
+        _cmd_leave_group(conn, obj)
+    elif cmd_type == 'LIST_GROUP_MEMBERS':
+        _cmd_list_group_members(conn, obj)
     else:
         _send_cmd(conn, { 'type': 'ERROR', 'message': 'unknown_command' })
 
@@ -628,12 +632,7 @@ def _cmd_load_group_history(conn, obj: dict):
     
     try:
         init_firebase_if_needed()
-        
-        # Check if user is member of group
-        user_in_group = bool(db.reference(f'/users/{uid}/groups/{group_id}').get())
-        if not user_in_group:
-            _send_cmd(conn, { 'type': 'GROUP_HISTORY', 'ok': False, 'error': 'not_member' })
-            return
+        # Allow loading history even if user left the group (read-only view)
         
         # Get group messages
         messages_ref = db.reference(f'/groups/{group_id}/messages')
@@ -668,4 +667,93 @@ def _cmd_load_group_history(conn, obj: dict):
     except Exception as e:
         _send_cmd(conn, { 'type': 'GROUP_HISTORY', 'ok': False, 'error': f'{e}' })
 
+
+# --- Additional group commands: leave and list members ---
+def _require_uid(conn) -> str:
+    uid = getattr(conn, '_chat_uid', '')
+    if uid:
+        return uid
+    try:
+        from Chat.Server.state import socket_to_uid as _s2u  # type: ignore
+    except Exception:
+        from state import socket_to_uid as _s2u  # type: ignore
+    try:
+        return _s2u.get(conn, '')
+    except Exception:
+        return ''
+
+
+def _cmd_leave_group(conn, obj: dict):
+    uid = _require_uid(conn)
+    group_id = (obj.get('groupId') or '').strip()
+    if not uid or not group_id:
+        _send_cmd(conn, { 'type': 'LEAVE_GROUP_OK', 'ok': False, 'error': 'missing_params' })
+        return
+    try:
+        init_firebase_if_needed()
+        # Remove from group members and user's group list
+        db.reference(f'/groups/{group_id}/members/{uid}').delete()
+        db.reference(f'/users/{uid}/groups/{group_id}').delete()
+        # Compose system text and persist as a system message
+        try:
+            leaver_email = get_email_for_uid(uid) or ''
+        except Exception:
+            leaver_email = uid
+        sys_text = f"{leaver_email} đã rời nhóm"
+        try:
+            db.reference(f'/groups/{group_id}/messages').push({
+                'senderUid': '',
+                'system': True,
+                'text': sys_text,
+                'ts': {'.sv': 'timestamp'},
+            })
+        except Exception:
+            pass
+        # Notify remaining online members in realtime
+        try:
+            mems = db.reference(f'/groups/{group_id}/members').get() or {}
+            if isinstance(mems, dict):
+                for m_uid, linked in mems.items():
+                    if not linked:
+                        continue
+                    try:
+                        peer_socket = uid_to_socket.get(m_uid)
+                        if peer_socket is not None:
+                            _send_cmd(peer_socket, { 'type': 'GROUP_SYSTEM', 'groupId': group_id, 'event': 'member_left', 'uid': uid, 'text': sys_text })
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        _send_cmd(conn, { 'type': 'LEAVE_GROUP_OK', 'ok': True, 'groupId': group_id })
+    except Exception as e:
+        _send_cmd(conn, { 'type': 'LEAVE_GROUP_OK', 'ok': False, 'error': f'{e}' })
+
+
+def _cmd_list_group_members(conn, obj: dict):
+    uid = _require_uid(conn)
+    group_id = (obj.get('groupId') or '').strip()
+    if not uid or not group_id:
+        _send_cmd(conn, { 'type': 'GROUP_MEMBERS', 'ok': False, 'members': [], 'error': 'missing_params' })
+        return
+    try:
+        init_firebase_if_needed()
+        # Require membership to view
+        in_group = bool(db.reference(f'/users/{uid}/groups/{group_id}').get())
+        if not in_group:
+            _send_cmd(conn, { 'type': 'GROUP_MEMBERS', 'ok': False, 'members': [], 'error': 'not_member' })
+            return
+        mems = db.reference(f'/groups/{group_id}/members').get() or {}
+        members: list[dict] = []
+        if isinstance(mems, dict):
+            for m_uid, linked in mems.items():
+                if not linked:
+                    continue
+                try:
+                    email = get_email_for_uid(m_uid) or ''
+                except Exception:
+                    email = ''
+                members.append({ 'uid': m_uid, 'email': email })
+        _send_cmd(conn, { 'type': 'GROUP_MEMBERS', 'ok': True, 'groupId': group_id, 'members': members })
+    except Exception as e:
+        _send_cmd(conn, { 'type': 'GROUP_MEMBERS', 'ok': False, 'members': [], 'error': f'{e}' })
 
